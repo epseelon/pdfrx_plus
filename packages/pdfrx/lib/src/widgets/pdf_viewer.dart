@@ -15,6 +15,8 @@ import 'package:vector_math/vector_math_64.dart' as vec;
 import '../../pdfrx.dart';
 import '../utils/edge_insets_extensions.dart';
 import '../utils/platform.dart';
+import 'annotations/pdf_annotation_controller.dart';
+import 'annotations/pdf_annotation_layer.dart';
 import 'interactive_viewer.dart' as iv;
 import 'internals/pdf_error_widget.dart';
 import 'internals/pdf_viewer_key_handler.dart';
@@ -238,6 +240,9 @@ class _PdfViewerState extends State<PdfViewer>
 
   late final _canvasLinkPainter = _CanvasLinkPainter(this);
 
+  /// Owns ink annotation strokes and (in Phase 2) the drawing mode flag.
+  final _annotationController = PdfAnnotationController();
+
   // Changes to the stream rebuilds the viewer
   final _updateStream = BehaviorSubject<Matrix4>();
 
@@ -289,8 +294,18 @@ class _PdfViewerState extends State<PdfViewer>
     super.initState();
     pdfrxFlutterInitialize();
     _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
+    _annotationController.annotationModeListenable.addListener(_onAnnotationModeChanged);
     _widgetUpdated(null);
   }
+
+  void _onAnnotationModeChanged() {
+    if (mounted) setState(() {});
+  }
+
+  bool get _effectivePanEnabled => widget.params.panEnabled && !_annotationController.annotationModeListenable.value;
+
+  bool get _effectiveScaleEnabled =>
+      widget.params.scaleEnabled && !_annotationController.annotationModeListenable.value;
 
   @override
   void didUpdateWidget(covariant PdfViewer oldWidget) {
@@ -332,6 +347,7 @@ class _PdfViewerState extends State<PdfViewer>
     _canvasLinkPainter.resetAll();
     _textCache.clear();
     _clearTextSelections(invalidate: false);
+    _annotationController.clear();
     _pageNumber = null;
     _gotoTargetPageNumber = null;
     _initialized = false;
@@ -406,6 +422,8 @@ class _PdfViewerState extends State<PdfViewer>
     _txController.removeListener(_onMatrixChanged);
     _controller?._attach(null);
     _txController.dispose();
+    _annotationController.annotationModeListenable.removeListener(_onAnnotationModeChanged);
+    _annotationController.dispose();
     super.dispose();
   }
 
@@ -505,8 +523,8 @@ class _PdfViewerState extends State<PdfViewer>
                         maxScale: widget.params.maxScale,
                         minScale: minScale,
                         panAxis: widget.params.panAxis,
-                        panEnabled: widget.params.panEnabled,
-                        scaleEnabled: widget.params.scaleEnabled,
+                        panEnabled: _effectivePanEnabled,
+                        scaleEnabled: _effectiveScaleEnabled,
                         onInteractionEnd: _onInteractionEnd,
                         onInteractionStart: _onInteractionStart,
                         onInteractionUpdate: _onInteractionUpdate,
@@ -1179,6 +1197,9 @@ class _PdfViewerState extends State<PdfViewer>
   }
 
   void _goToManipulated(void Function(Matrix4 m) manipulate) {
+    if (_annotationController.annotationModeListenable.value) {
+      return;
+    }
     final m = _txController.value.clone();
     manipulate(m);
     _txController.value = _makeMatrixInSafeRange(m, forceClamp: true);
@@ -2247,6 +2268,23 @@ class _PdfViewerState extends State<PdfViewer>
             ),
           );
         }
+
+        overlayWidgets.add(
+          Positioned(
+            key: Key('#__pageAnnotationLayer__:${page.pageNumber}'),
+            left: rectExternal.left,
+            top: rectExternal.top,
+            width: rectExternal.width,
+            height: rectExternal.height,
+            child: PdfAnnotationLayer(
+              controller: _annotationController,
+              page: page,
+              pageRect: rectExternal,
+              newStrokeColor: widget.params.annotationStrokeColor,
+              newStrokeWidth: widget.params.annotationStrokeWidth,
+            ),
+          ),
+        );
       }
     }
 
@@ -2928,6 +2966,9 @@ class _PdfViewerState extends State<PdfViewer>
     Duration duration = const Duration(milliseconds: 200),
     Curve curve = Curves.easeInOut,
   }) async {
+    if (_annotationController.annotationModeListenable.value) {
+      return;
+    }
     void update() {
       if (_animationResettingGuard != 0) return;
       _txController.value = _animGoTo!.value;
@@ -2985,10 +3026,15 @@ class _PdfViewerState extends State<PdfViewer>
     required Rect rect,
     PdfPageAnchor? anchor,
     Duration duration = const Duration(milliseconds: 200),
-  }) => _goTo(
-    _calcMatrixForArea(rect: rect, anchor: anchor),
-    duration: duration,
-  );
+  }) async {
+    if (_annotationController.annotationModeListenable.value) {
+      return;
+    }
+    return _goTo(
+      _calcMatrixForArea(rect: rect, anchor: anchor),
+      duration: duration,
+    );
+  }
 
   Future<void> _goToPage({
     required int pageNumber,
@@ -2997,6 +3043,9 @@ class _PdfViewerState extends State<PdfViewer>
     bool maintainCurrentZoom = true,
     double? forceScale,
   }) async {
+    if (_annotationController.annotationModeListenable.value) {
+      return;
+    }
     final pageCount = _document!.pages.length;
     final int targetPageNumber;
     if (pageNumber < 1) {
@@ -3065,6 +3114,9 @@ class _PdfViewerState extends State<PdfViewer>
     PdfPageAnchor? anchor,
     Duration duration = const Duration(milliseconds: 200),
   }) async {
+    if (_annotationController.annotationModeListenable.value) {
+      return;
+    }
     _gotoTargetPageNumber = pageNumber;
     await _goTo(
       _calcMatrixForRectInsidePage(pageNumber: pageNumber, rect: rect, anchor: anchor),
@@ -3074,6 +3126,9 @@ class _PdfViewerState extends State<PdfViewer>
   }
 
   Future<bool> _goToDest(PdfDest? dest, {Duration duration = const Duration(milliseconds: 200)}) async {
+    if (_annotationController.annotationModeListenable.value) {
+      return false;
+    }
     final m = _calcMatrixForDest(dest);
     if (m == null) return false;
     if (dest != null) {
@@ -5278,6 +5333,70 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   ///
   /// Almost identical to `setState` but can be called outside the state.
   void invalidate() => _state._invalidate();
+
+  /// Listenable that is `true` while the viewer is in annotation drawing
+  /// mode (between [enterAnnotationMode] and [exitAnnotationMode]).
+  ///
+  /// Use this to hide overlays / FABs while the user is drawing.
+  ValueListenable<bool> get annotationModeListenable => _state._annotationController.annotationModeListenable;
+
+  /// Enter annotation drawing mode.
+  ///
+  /// While in this mode the viewer suppresses pan, scale, and all
+  /// programmatic navigation (`goToPage`, `goToArea`, `goToRectInsidePage`,
+  /// `goToDest`, `goTo`). Per-page gesture detectors capture pan input
+  /// and route it to the ink annotation layer.
+  ///
+  /// Idempotent — calling while already in annotation mode is a no-op.
+  Future<void> enterAnnotationMode() async {
+    _state._annotationController.enterMode();
+  }
+
+  /// Exit annotation drawing mode.
+  ///
+  /// Restores pan, scale, and programmatic navigation, then awaits the
+  /// caller's [PdfViewerParams.onAnnotationsChanged] callback (if any)
+  /// with the current set of strokes serialized as Instant JSON.
+  ///
+  /// Idempotent — calling while not in annotation mode is a no-op.
+  Future<void> exitAnnotationMode() async {
+    await _state._annotationController.exitMode(onAnnotationsChanged: _state.widget.params.onAnnotationsChanged);
+  }
+
+  /// Replace all freehand ink annotations with strokes decoded from [json].
+  ///
+  /// Accepts an Instant JSON document (see
+  /// https://www.nutrient.io/guides/web/json/) wrapped (`{"annotations": [...]}`)
+  /// or a bare array. Only `pspdfkit/ink` entries with `v == 1` and an
+  /// in-range `pageIndex` are kept; everything else is silently ignored.
+  /// Throws [FormatException] on malformed JSON.
+  ///
+  /// Annotations are document-blind: this controller does not know which
+  /// PDF the JSON belongs to. Callers are responsible for associating the
+  /// JSON with the correct document (e.g. by [PdfDocument.sourceName]).
+  void applyAnnotationsFromJson(String json) {
+    final pageCount = _state._document?.pages.length ?? 0;
+    _state._annotationController.importJson(
+      json,
+      pageCount: pageCount,
+      defaultColor: _state.widget.params.annotationStrokeColor,
+      defaultLineWidth: _state.widget.params.annotationStrokeWidth,
+    );
+  }
+
+  /// Serialize all current ink annotations as Instant JSON.
+  ///
+  /// The returned document includes `format` and `annotations` fields
+  /// only; `pdfId` is omitted per Nutrient's storage guidance.
+  ///
+  /// Annotations are document-blind: callers are responsible for
+  /// associating the returned JSON with the correct document.
+  String exportAnnotationsAsJson() => _state._annotationController.exportJson();
+
+  /// Remove all in-memory ink annotations. Does not fire any
+  /// `onAnnotationsChanged` callback (clearing is a programmatic
+  /// action; persistence is the caller's call).
+  void clearAnnotations() => _state._annotationController.clear();
 
   /// The text selection delegate.
   PdfTextSelectionDelegate get textSelectionDelegate => _state;

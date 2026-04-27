@@ -74,6 +74,9 @@ class PdfViewerParams {
     this.keyHandlerParams = const PdfViewerKeyHandlerParams(),
     this.behaviorControlParams = const PdfViewerBehaviorControlParams(),
     this.forceReload = false,
+    this.annotationStrokeColor = const Color(0xFFFF3B30),
+    this.annotationStrokeWidth = 2.0,
+    this.onAnnotationsChanged,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -90,6 +93,22 @@ class PdfViewerParams {
 
   /// Background color of the viewer.
   final Color backgroundColor;
+
+  /// Stroke color used for new freehand ink annotations created in
+  /// annotation mode. Imported strokes carry their own color and ignore
+  /// this default.
+  final Color annotationStrokeColor;
+
+  /// Stroke width (PDF points) for new freehand ink annotations.
+  /// Imported strokes carry their own width and ignore this default.
+  final double annotationStrokeWidth;
+
+  /// Called once on `PdfViewerController.exitAnnotationMode()` with the
+  /// current ink annotations serialized as Instant JSON. The viewer awaits
+  /// this future before fully exiting mode.
+  ///
+  /// Not fired by `applyAnnotationsFromJson` or `clearAnnotations`.
+  final PdfAnnotationsChangedCallback? onAnnotationsChanged;
 
   /// Function to customize the layout of the pages.
   ///
@@ -1575,6 +1594,20 @@ typedef PdfViewerErrorBannerBuilder =
 ///
 /// [size] is the size of the link.
 typedef PdfLinkWidgetBuilder = Widget? Function(BuildContext context, PdfLink link, Size size);
+
+/// Called when the user exits annotation drawing mode (via
+/// `PdfViewerController.exitAnnotationMode`).
+///
+/// Receives the current set of ink annotations serialized as an
+/// Instant JSON document (see https://www.nutrient.io/guides/web/json/).
+/// The viewer awaits this future before fully exiting mode, so I/O
+/// performed here is guaranteed to flush even if the user immediately
+/// backgrounds the app.
+///
+/// Annotations are document-blind: implementers must associate the
+/// JSON with the correct document themselves (using `PdfDocument.sourceName`,
+/// a file path, etc.).
+typedef PdfAnnotationsChangedCallback = Future<void> Function(String json);
 
 /// Function to paint things on page.
 ///
