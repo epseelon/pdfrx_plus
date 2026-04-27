@@ -83,7 +83,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     if (next > controller.pageCount) {
       _switchDocument(1);
     } else {
-      controller.goToPage(pageNumber: next);
+      controller.goToPage(pageNumber: next, duration: Duration.zero);
     }
   }
 
@@ -93,7 +93,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     if (prev < 1) {
       _switchDocument(-1, gotoLast: true);
     } else {
-      controller.goToPage(pageNumber: prev);
+      controller.goToPage(pageNumber: prev, duration: Duration.zero);
     }
   }
 
@@ -149,7 +149,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     controller.document.events.listen((event) {});
                     if (_gotoLastOnReady) {
                       _gotoLastOnReady = false;
-                      controller.goToPage(pageNumber: _lastSpreadStart(document.pages.length));
+                      controller.goToPage(pageNumber: _lastSpreadStart(document.pages.length), duration: Duration.zero);
                     }
                   },
                 ),
