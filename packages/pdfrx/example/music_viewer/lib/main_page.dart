@@ -133,7 +133,20 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   pageTransition: PageTransition.discrete,
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
-                  viewerOverlayBuilder: (context, size, handleLinkTap) => [],
+                  viewerOverlayBuilder: (context, size, handleLinkTap) => [
+                    Positioned.fill(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTap: _prev),
+                          ),
+                          Expanded(
+                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTap: _next),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   loadingBannerBuilder: (context, bytesDownloaded, totalBytes) => Center(
                     child: CircularProgressIndicator(
                       value: totalBytes != null ? bytesDownloaded / totalBytes : null,
@@ -163,24 +176,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
               onPressed: _toggleMode,
               child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
-            ),
-          ),
-          Positioned(
-            top: 32,
-            left: 32,
-            child: FloatingActionButton(
-              tooltip: 'Previous page',
-              onPressed: _prev,
-              child: const Icon(Icons.chevron_left),
-            ),
-          ),
-          Positioned(
-            top: 32,
-            right: 32,
-            child: FloatingActionButton(
-              tooltip: 'Next page',
-              onPressed: _next,
-              child: const Icon(Icons.chevron_right),
             ),
           ),
         ],
