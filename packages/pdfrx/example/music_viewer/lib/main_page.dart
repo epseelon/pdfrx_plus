@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 class MainPage extends StatefulWidget {
-  const MainPage({super.key});
+  const MainPage({required this.pdfFilePaths, super.key});
+
+  final List<String> pdfFilePaths;
 
   @override
   State<MainPage> createState() => _MainPageState();
@@ -11,6 +13,8 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final documentRef = ValueNotifier<PdfDocumentRef?>(null);
   final controller = PdfViewerController();
+
+  int? _fileIndex;
 
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
@@ -22,7 +26,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    openInitialFile();
+    _fileIndex = 0;
+    _openFile(index: _fileIndex);
   }
 
   @override
@@ -39,8 +44,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     if (mounted) setState(() {});
   }
 
-  Future<void> openInitialFile({bool useProgressiveLoading = true}) async {
-    documentRef.value = PdfDocumentRefAsset('assets/01.pdf', useProgressiveLoading: useProgressiveLoading);
+  Future<void> _openFile({int? index, bool useProgressiveLoading = true}) async {
+    if (index == null) {
+      documentRef.value = null;
+    } else {
+      final path = widget.pdfFilePaths[index];
+      documentRef.value = PdfDocumentRefFile(path, useProgressiveLoading: useProgressiveLoading);
+    }
   }
 
   @override
@@ -52,7 +62,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             valueListenable: documentRef,
             builder: (context, docRef, child) {
               if (docRef == null) {
-                return const Center(child: Text('No document loaded', style: TextStyle(fontSize: 20)));
+                return const Center(child: CircularProgressIndicator());
               }
               return PdfViewer(
                 docRef,
@@ -84,6 +94,17 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             },
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        child: Icon(Icons.skip_next),
+        onPressed: () {
+          if (_fileIndex != null) {
+            setState(() {
+              _fileIndex = (_fileIndex! + 1) % widget.pdfFilePaths.length;
+              _openFile(index: _fileIndex);
+            });
+          }
+        },
       ),
     );
   }
