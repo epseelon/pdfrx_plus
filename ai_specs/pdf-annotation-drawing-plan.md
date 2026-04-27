@@ -75,20 +75,20 @@ Add freehand annotation APIs to `pdfrx` (`PdfViewerController` methods + `PdfVie
 
 - **Goal**: User can tap edit FAB, draw, tap close → JSON written to temp file; reopening the document or restarting the app restores strokes; switching documents wipes UI and loads the next document's strokes (or none).
 
-- [ ] `packages/pdfrx/example/music_viewer/pubspec.yaml` — `flutter pub add crypto` from the music_viewer dir.
-- [ ] `packages/pdfrx/example/music_viewer/lib/annotation_storage.dart` — top-level async fns with optional `Directory? overrideTempDir`: `annotationsFileFor`, `readAnnotations` (returns `null` on missing), `writeAnnotations` (plain `writeAsString`). SHA-1 of absolute path → hex filename under `<tempDir>/pdfrx_annotations/`. Catch + log I/O errors.
-- [ ] `packages/pdfrx/example/music_viewer/lib/main_page.dart` —
+- [x] `packages/pdfrx/example/music_viewer/pubspec.yaml` — `flutter pub add crypto` from the music_viewer dir.
+- [x] `packages/pdfrx/example/music_viewer/lib/annotation_storage.dart` — top-level async fns with optional `Directory? overrideTempDir`: `annotationsFileFor`, `readAnnotations` (returns `null` on missing), `writeAnnotations` (plain `writeAsString`). SHA-1 of absolute path → hex filename under `<tempDir>/pdfrx_annotations/`. Catch + log I/O errors.
+- [x] `packages/pdfrx/example/music_viewer/lib/main_page.dart` —
   - New "edit" FAB (`Icons.edit`) wired to `controller.enterAnnotationMode()`. Stack vertically with existing toggle FAB at `Positioned(bottom: 32, left: 32, ...)` using a `Column(mainAxisSize: min, ...)`.
   - Wrap toggle FAB, edit FAB, and `Scaffold.floatingActionButton` (skip-next) each in `ValueListenableBuilder<bool>(controller.annotationModeListenable, ...)` returning `SizedBox.shrink()` while mode is on.
   - In `viewerOverlayBuilder`, wrap each entry (tap-zone Row + page indicator) in its own `ValueListenableBuilder<bool>` returning `SizedBox.shrink()` while mode is on.
   - Add `Positioned(bottom: 0, left: 0, right: 0, ...)` containing `Material` toolbar (~56px, `SafeArea(top: false)`) with one close `IconButton(Icons.close)` calling `controller.exitAnnotationMode()`. Wrap in `ValueListenableBuilder<bool>` so it shows only while mode is on.
   - In `PdfViewerParams`: `onAnnotationsChanged: (json) async => writeAnnotations(widget.pdfFilePaths[_fileIndex!], json)`.
   - In `onViewerReady` (after existing focus/event lines): `try { final json = await readAnnotations(widget.pdfFilePaths[_fileIndex!]); if (json != null) controller.applyAnnotationsFromJson(json); } catch (e) { debugPrint('annotation load failed: $e'); }`.
-- [ ] TDD (in `packages/pdfrx/example/music_viewer/test/annotation_storage_test.dart`): `writeAnnotations` then `readAnnotations` round-trips JSON when `overrideTempDir` is a fresh `systemTemp.createTempSync('annot_')`.
-- [ ] TDD: `readAnnotations` returns `null` for an absolute path that has never been written.
-- [ ] TDD: `writeAnnotations` overwrites prior content; `readAnnotations` returns the new content.
-- [ ] TDD: SHA-1-keyed filename — two writes with the same absolute path produce the same file; different paths produce different files (assert via two writes + listing the override temp dir).
-- [ ] Manual smoke test (per spec §Manual smoke test):
+- [x] TDD (in `packages/pdfrx/example/music_viewer/test/annotation_storage_test.dart`): `writeAnnotations` then `readAnnotations` round-trips JSON when `overrideTempDir` is a fresh `systemTemp.createTempSync('annot_')`.
+- [x] TDD: `readAnnotations` returns `null` for an absolute path that has never been written.
+- [x] TDD: `writeAnnotations` overwrites prior content; `readAnnotations` returns the new content.
+- [x] TDD: SHA-1-keyed filename — two writes with the same absolute path produce the same file; different paths produce different files (assert via two writes + listing the override temp dir).
+- [ ] Manual smoke test (per spec §Manual smoke test) — **REQUIRES USER ACTION**:
   - `cd packages/pdfrx/example/music_viewer && flutter run`
   - Open doc A in 2-page mode, tap edit, draw two strokes including one crossing the page boundary; confirm crossing stroke is clipped at the right edge of the left page.
   - Tap close; confirm toggle/skip/edit FABs, page indicator, and tap zones return.
@@ -96,7 +96,7 @@ Add freehand annotation APIs to `pdfrx` (`PdfViewerController` methods + `PdfVie
   - Cycle back to doc A; confirm strokes reappear.
   - Kill + relaunch; confirm doc A still has its strokes.
   - Toggle to 1-page mode; confirm strokes still render in correct positions.
-- [ ] Verify: `cd packages/pdfrx/example/music_viewer && flutter analyze && flutter test`
+- [x] Verify: `cd packages/pdfrx/example/music_viewer && flutter analyze && flutter test` — analyze clean, all 4 storage tests pass.
 
 ## Risks / Out of scope
 

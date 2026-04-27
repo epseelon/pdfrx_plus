@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
+import 'annotation_storage.dart';
 import 'horizontal_facing_pages_layout.dart';
 
 class MainPage extends StatefulWidget {
@@ -184,19 +185,37 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [
-                    Positioned.fill(
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _prev()),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: controller.annotationModeListenable,
+                      builder: (context, annotating, _) {
+                        if (annotating) return const SizedBox.shrink();
+                        return Positioned.fill(
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onTapDown: (_) => _prev(),
+                                ),
+                              ),
+                              Expanded(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onTapDown: (_) => _next(),
+                                ),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _next()),
-                          ),
-                        ],
-                      ),
+                        );
+                      },
                     ),
-                    _buildPageIndicator(),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: controller.annotationModeListenable,
+                      builder: (context, annotating, _) {
+                        if (annotating) return const SizedBox.shrink();
+                        return _buildPageIndicator();
+                      },
+                    ),
                   ],
                   onPageChanged: (pageNumber) {
                     if (pageNumber != null) _currentPage.value = pageNumber;
@@ -211,6 +230,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   onDocumentChanged: (document) async {
                     if (document == null) {}
                   },
+                  onAnnotationsChanged: (json) async {
+                    final idx = _fileIndex;
+                    if (idx == null) return;
+                    await writeAnnotations(widget.pdfFilePaths[idx], json);
+                  },
                   onViewerReady: (document, controller) async {
                     controller.requestFocus();
                     controller.document.events.listen((event) {});
@@ -222,6 +246,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     } else {
                       _currentPage.value = controller.pageNumber ?? 1;
                     }
+                    final idx = _fileIndex;
+                    if (idx != null) {
+                      try {
+                        final json = await readAnnotations(widget.pdfFilePaths[idx]);
+                        if (json != null) controller.applyAnnotationsFromJson(json);
+                      } catch (e, st) {
+                        debugPrint('annotation load failed: $e\n$st');
+                      }
+                    }
                   },
                 ),
               );
@@ -230,23 +263,81 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
           Positioned(
             bottom: 32,
             left: 32,
-            child: FloatingActionButton(
-              tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
-              onPressed: _toggleMode,
-              child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+            child: ValueListenableBuilder<bool>(
+              valueListenable: controller.annotationModeListenable,
+              builder: (context, annotating, _) {
+                if (annotating) return const SizedBox.shrink();
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    FloatingActionButton(
+                      heroTag: 'annotate',
+                      tooltip: 'Annotate',
+                      onPressed: () => controller.enterAnnotationMode(),
+                      child: const Icon(Icons.edit),
+                    ),
+                    const SizedBox(height: 16),
+                    FloatingActionButton(
+                      heroTag: 'toggleMode',
+                      tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
+                      onPressed: _toggleMode,
+                      child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+                    ),
+                  ],
+                );
+              },
             ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: controller.annotationModeListenable,
+            builder: (context, annotating, _) {
+              if (!annotating) return const SizedBox.shrink();
+              return Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Material(
+                  elevation: 8,
+                  color: Theme.of(context).colorScheme.surface,
+                  child: SafeArea(
+                    top: false,
+                    child: SizedBox(
+                      height: 56,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            tooltip: 'Close',
+                            icon: const Icon(Icons.close),
+                            onPressed: () => controller.exitAnnotationMode(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        child: Icon(Icons.skip_next),
-        onPressed: () {
-          if (_fileIndex != null) {
-            setState(() {
-              _fileIndex = (_fileIndex! + 1) % widget.pdfFilePaths.length;
-              _openFile(index: _fileIndex);
-            });
-          }
+      floatingActionButton: ValueListenableBuilder<bool>(
+        valueListenable: controller.annotationModeListenable,
+        builder: (context, annotating, _) {
+          if (annotating) return const SizedBox.shrink();
+          return FloatingActionButton(
+            heroTag: 'skipNext',
+            child: const Icon(Icons.skip_next),
+            onPressed: () {
+              if (_fileIndex != null) {
+                setState(() {
+                  _fileIndex = (_fileIndex! + 1) % widget.pdfFilePaths.length;
+                  _openFile(index: _fileIndex);
+                });
+              }
+            },
+          );
         },
       ),
     );
