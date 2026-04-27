@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
+import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
 import 'horizontal_facing_pages_layout.dart';
 
@@ -15,6 +16,7 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final documentRef = ValueNotifier<PdfDocumentRef?>(null);
   final controller = PdfViewerController();
+  final _currentPage = ValueNotifier<int>(1);
 
   int? _fileIndex;
   bool _twoPageMode = true;
@@ -39,6 +41,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     _magnifierAnimController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     documentRef.dispose();
+    _currentPage.dispose();
     super.dispose();
   }
 
@@ -75,6 +78,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
       _gotoLastOnReady = gotoLast;
       _openFile(index: _fileIndex);
     });
+    _currentPage.value = 1;
   }
 
   void _next() {
@@ -95,6 +99,52 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     } else {
       controller.goToPage(pageNumber: prev, duration: Duration.zero);
     }
+  }
+
+  Widget _buildPageIndicator() {
+    if (!controller.isReady) return const SizedBox.shrink();
+    final pageCount = controller.pageCount;
+    final spreadCount = _twoPageMode ? (pageCount + 1) ~/ 2 : pageCount;
+    if (spreadCount < 2) return const SizedBox.shrink();
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: Center(
+          child: ValueListenableBuilder<int>(
+            valueListenable: _currentPage,
+            builder: (context, current, _) {
+              final currentSpread = _twoPageMode ? (current - 1) ~/ 2 : current - 1;
+              return Container(
+                margin: const EdgeInsets.only(top: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: AnimatedSmoothIndicator(
+                  activeIndex: currentSpread.clamp(0, spreadCount - 1),
+                  count: spreadCount,
+                  duration: Duration(milliseconds: 500),
+                  effect: const ExpandingDotsEffect(
+                    dotColor: Colors.white54,
+                    activeDotColor: Colors.white,
+                    dotHeight: 8,
+                    dotWidth: 8,
+                    spacing: 8,
+                  ),
+                  onDotClicked: (i) => controller.goToPage(
+                    pageNumber: _twoPageMode ? i * 2 + 1 : i + 1,
+                    duration: Duration.zero,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
   }
 
   PdfPageLayout _layoutSinglePage(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
@@ -146,7 +196,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                         ],
                       ),
                     ),
+                    _buildPageIndicator(),
                   ],
+                  onPageChanged: (pageNumber) {
+                    if (pageNumber != null) _currentPage.value = pageNumber;
+                  },
                   loadingBannerBuilder: (context, bytesDownloaded, totalBytes) => Center(
                     child: CircularProgressIndicator(
                       value: totalBytes != null ? bytesDownloaded / totalBytes : null,
@@ -162,7 +216,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     controller.document.events.listen((event) {});
                     if (_gotoLastOnReady) {
                       _gotoLastOnReady = false;
-                      controller.goToPage(pageNumber: _lastSpreadStart(document.pages.length), duration: Duration.zero);
+                      final p = _lastSpreadStart(document.pages.length);
+                      _currentPage.value = p;
+                      controller.goToPage(pageNumber: p, duration: Duration.zero);
+                    } else {
+                      _currentPage.value = controller.pageNumber ?? 1;
                     }
                   },
                 ),
