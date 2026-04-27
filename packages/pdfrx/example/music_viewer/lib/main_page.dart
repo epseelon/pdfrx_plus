@@ -138,10 +138,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       child: Row(
                         children: [
                           Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTap: _prev),
+                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _prev()),
                           ),
                           Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTap: _next),
+                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _next()),
                           ),
                         ],
                       ),
