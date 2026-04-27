@@ -18,6 +18,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
 
   int? _fileIndex;
   bool _twoPageMode = true;
+  bool _gotoLastOnReady = false;
 
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
@@ -61,11 +62,55 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
   }
 
+  int get _step => _twoPageMode ? 2 : 1;
+
+  int _spreadStart(int p) => _twoPageMode && p.isEven ? p - 1 : p;
+
+  int _lastSpreadStart(int pageCount) => _twoPageMode && pageCount.isEven ? pageCount - 1 : pageCount;
+
+  void _switchDocument(int delta, {bool gotoLast = false}) {
+    final n = widget.pdfFilePaths.length;
+    setState(() {
+      _fileIndex = ((_fileIndex! + delta) % n + n) % n;
+      _gotoLastOnReady = gotoLast;
+      _openFile(index: _fileIndex);
+    });
+  }
+
+  void _next() {
+    if (!controller.isReady) return;
+    final next = _spreadStart(controller.pageNumber ?? 1) + _step;
+    if (next > controller.pageCount) {
+      _switchDocument(1);
+    } else {
+      controller.goToPage(pageNumber: next);
+    }
+  }
+
+  void _prev() {
+    if (!controller.isReady) return;
+    final prev = _spreadStart(controller.pageNumber ?? 1) - _step;
+    if (prev < 1) {
+      _switchDocument(-1, gotoLast: true);
+    } else {
+      controller.goToPage(pageNumber: prev);
+    }
+  }
+
   PdfPageLayout _layoutSinglePage(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
-      SequentialPagesLayout.fromPages(pages, params, helper: helper, scrollDirection: Axis.horizontal);
+      SequentialPagesLayout.fromPages(
+        pages,
+        params,
+        helper: helper,
+        scrollDirection: Axis.horizontal,
+      );
 
   PdfPageLayout _layoutTwoPages(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
-      HorizontalFacingPagesLayout.fromPages(pages, params, helper: helper);
+      HorizontalFacingPagesLayout.fromPages(
+        pages,
+        params,
+        helper: helper,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -102,6 +147,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   onViewerReady: (document, controller) async {
                     controller.requestFocus();
                     controller.document.events.listen((event) {});
+                    if (_gotoLastOnReady) {
+                      _gotoLastOnReady = false;
+                      controller.goToPage(pageNumber: _lastSpreadStart(document.pages.length));
+                    }
                   },
                 ),
               );
@@ -114,6 +163,24 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
               onPressed: _toggleMode,
               child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+            ),
+          ),
+          Positioned(
+            top: 32,
+            left: 32,
+            child: FloatingActionButton(
+              tooltip: 'Previous page',
+              onPressed: _prev,
+              child: const Icon(Icons.chevron_left),
+            ),
+          ),
+          Positioned(
+            top: 32,
+            right: 32,
+            child: FloatingActionButton(
+              tooltip: 'Next page',
+              onPressed: _next,
+              child: const Icon(Icons.chevron_right),
             ),
           ),
         ],
