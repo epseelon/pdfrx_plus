@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'horizontal_facing_pages_layout.dart';
+
 class MainPage extends StatefulWidget {
   const MainPage({required this.pdfFilePaths, super.key});
 
@@ -15,6 +17,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final controller = PdfViewerController();
 
   int? _fileIndex;
+  bool _twoPageMode = true;
 
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
@@ -53,6 +56,17 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     }
   }
 
+  void _toggleMode() {
+    setState(() => _twoPageMode = !_twoPageMode);
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
+  }
+
+  PdfPageLayout _layoutSinglePage(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
+      SequentialPagesLayout.fromPages(pages, params, helper: helper, scrollDirection: Axis.horizontal);
+
+  PdfPageLayout _layoutTwoPages(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
+      HorizontalFacingPagesLayout.fromPages(pages, params, helper: helper);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -71,9 +85,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   keyHandlerParams: PdfViewerKeyHandlerParams(autofocus: true),
                   maxScale: 8,
                   scrollPhysics: PdfViewerParams.getScrollPhysics(context),
-                  pageTransition: PageTransition.continuous,
+                  pageTransition: PageTransition.discrete,
+                  layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
-                  //pageTransition: PageTransition.discrete,
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [],
                   loadingBannerBuilder: (context, bytesDownloaded, totalBytes) => Center(
                     child: CircularProgressIndicator(
@@ -92,6 +106,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 ),
               );
             },
+          ),
+          Positioned(
+            bottom: 32,
+            left: 32,
+            child: FloatingActionButton(
+              tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
+              onPressed: _toggleMode,
+              child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+            ),
           ),
         ],
       ),
