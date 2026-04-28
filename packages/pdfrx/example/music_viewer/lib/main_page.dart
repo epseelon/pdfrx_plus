@@ -169,37 +169,88 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     );
   }
 
+  Widget _penThicknessPreview(double thickness, Color color, {double width = 60}) {
+    return SizedBox(
+      width: width,
+      height: 12,
+      child: Center(
+        child: Container(
+          width: width,
+          height: thickness,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(thickness / 2),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _eraserSizePreview(double size, Color borderColor, {double box = 48}) {
+    final diameter = size.clamp(0, box);
+    return SizedBox(
+      width: box,
+      height: box,
+      child: Center(
+        child: Container(
+          width: diameter.toDouble(),
+          height: diameter.toDouble(),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: borderColor, width: 1.5),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildThicknessButton(bool isPen) {
     if (isPen) {
-      return ValueListenableBuilder<double>(
-        valueListenable: controller.annotationStrokeWidthListenable,
-        builder: (context, current, _) => PopupMenuButton<double>(
-          tooltip: 'Pen thickness',
-          icon: const Icon(Icons.line_weight),
-          onSelected: controller.setAnnotationStrokeWidth,
-          itemBuilder: (context) => [
-            for (final w in _penThicknesses)
-              CheckedPopupMenuItem<double>(
-                value: w,
-                checked: w == current,
-                child: Text('${w.toStringAsFixed(1)} pt'),
-              ),
-          ],
+      return ValueListenableBuilder<Color>(
+        valueListenable: controller.annotationStrokeColorListenable,
+        builder: (context, color, _) => ValueListenableBuilder<double>(
+          valueListenable: controller.annotationStrokeWidthListenable,
+          builder: (context, current, _) => PopupMenuButton<double>(
+            tooltip: 'Pen thickness',
+            icon: _penThicknessPreview(current, color, width: 22),
+            onSelected: controller.setAnnotationStrokeWidth,
+            itemBuilder: (context) => [
+              for (final w in _penThicknesses)
+                CheckedPopupMenuItem<double>(
+                  value: w,
+                  checked: w == current,
+                  child: Row(
+                    children: [
+                      _penThicknessPreview(w, color),
+                      const SizedBox(width: 12),
+                      Text('${w.toStringAsFixed(1)} pt'),
+                    ],
+                  ),
+                ),
+            ],
+          ),
         ),
       );
     }
+    final borderColor = Theme.of(context).colorScheme.onSurface;
     return ValueListenableBuilder<double>(
       valueListenable: controller.annotationEraserRadiusListenable,
       builder: (context, current, _) => PopupMenuButton<double>(
         tooltip: 'Eraser size',
-        icon: const Icon(Icons.line_weight),
+        icon: _eraserSizePreview(current.clamp(4, 22), borderColor, box: 22),
         onSelected: controller.setAnnotationEraserRadius,
         itemBuilder: (context) => [
           for (final r in _eraserSizes)
             CheckedPopupMenuItem<double>(
               value: r,
               checked: r == current,
-              child: Text('${r.toStringAsFixed(0)} pt'),
+              child: Row(
+                children: [
+                  _eraserSizePreview(r, borderColor),
+                  const SizedBox(width: 12),
+                  Text('${r.toStringAsFixed(0)} pt'),
+                ],
+              ),
             ),
         ],
       ),
