@@ -451,15 +451,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             builder: (context, annotating, _) {
               if (!annotating) return const SizedBox.shrink();
               return Positioned.fill(
-                child: ValueListenableBuilder<PdfAnnotationTool>(
-                  valueListenable: controller.annotationToolListenable,
-                  builder: (context, tool, _) {
-                    final isPen = tool == PdfAnnotationTool.pen;
-                    return DraggablePanel(
-                      size: Size(isPen ? 376 : 328, 56),
-                      builder: (context, dragHandle) => _buildAnnotationToolbar(dragHandle, tool),
-                    );
-                  },
+                child: DraggablePanel(
+                  builder: (context, dragHandle) => ValueListenableBuilder<PdfAnnotationTool>(
+                    valueListenable: controller.annotationToolListenable,
+                    builder: (context, tool, _) => _buildAnnotationToolbar(dragHandle, tool),
+                  ),
                 ),
               );
             },
