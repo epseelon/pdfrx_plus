@@ -18,31 +18,11 @@ import 'pdf_ink_annotation.dart';
 /// ([PdfAnnotationTool.eraser]). Page rotation is assumed to be `0°`
 /// (see spec §17).
 class PdfAnnotationLayer extends StatelessWidget {
-  const PdfAnnotationLayer({
-    required this.controller,
-    required this.page,
-    required this.pageRect,
-    required this.newStrokeColor,
-    required this.newStrokeWidth,
-    required this.eraserRadiusInPdfPoints,
-    super.key,
-  });
+  const PdfAnnotationLayer({required this.controller, required this.page, required this.pageRect, super.key});
 
   final PdfAnnotationController controller;
   final PdfPage page;
   final Rect pageRect;
-
-  /// Stroke color applied to new strokes drawn on this page in annotation
-  /// mode. Imported strokes carry their own color and ignore this default.
-  final Color newStrokeColor;
-
-  /// Stroke width (PDF points) applied to new strokes drawn on this page.
-  /// Imported strokes carry their own width and ignore this default.
-  final double newStrokeWidth;
-
-  /// Hit radius (PDF points) applied to the eraser tool's per-pan-update
-  /// stroke removal sweep.
-  final double eraserRadiusInPdfPoints;
 
   @override
   Widget build(BuildContext context) {
@@ -58,10 +38,11 @@ class PdfAnnotationLayer extends StatelessWidget {
                 inFlightProvider: () => controller.inFlightStrokesFor(page.pageNumber - 1),
                 eraserCursorProvider: () =>
                     controller.eraserCursorPageIndex == page.pageNumber - 1 ? controller.eraserCursorPdfPoint : null,
-                eraserRadiusInPdfPoints: eraserRadiusInPdfPoints,
+                eraserRadiusProvider: () => controller.eraserRadius,
                 repaint: Listenable.merge([
                   controller.inFlightChangedListenable,
                   controller.eraserCursorChangedListenable,
+                  controller.eraserRadiusListenable,
                 ]),
                 pageWidth: page.width,
                 pageHeight: page.height,
@@ -100,15 +81,15 @@ class PdfAnnotationLayer extends StatelessWidget {
         controller.startStroke(
           pageIndex: page.pageNumber - 1,
           firstPoint: _toPdfSpace(local),
-          lineWidth: newStrokeWidth,
-          strokeColor: newStrokeColor,
+          lineWidth: controller.strokeWidth,
+          strokeColor: controller.strokeColor,
           opacity: 1.0,
         );
       case PdfAnnotationTool.eraser:
         controller.startErase(
           pageIndex: page.pageNumber - 1,
           pdfPoint: _toPdfSpace(local),
-          radiusInPdfPoints: eraserRadiusInPdfPoints,
+          radiusInPdfPoints: controller.eraserRadius,
         );
     }
   }
@@ -122,7 +103,7 @@ class PdfAnnotationLayer extends StatelessWidget {
         controller.continueErase(
           pageIndex: page.pageNumber - 1,
           pdfPoint: _toPdfSpace(local),
-          radiusInPdfPoints: eraserRadiusInPdfPoints,
+          radiusInPdfPoints: controller.eraserRadius,
         );
     }
   }
@@ -154,7 +135,7 @@ class _InkPainter extends CustomPainter {
     required this.strokes,
     required this.inFlightProvider,
     required this.eraserCursorProvider,
-    required this.eraserRadiusInPdfPoints,
+    required this.eraserRadiusProvider,
     required Listenable repaint,
     required this.pageWidth,
     required this.pageHeight,
@@ -163,7 +144,7 @@ class _InkPainter extends CustomPainter {
   final List<PdfInkAnnotation> strokes;
   final Iterable<PdfInkAnnotation> Function() inFlightProvider;
   final Offset? Function() eraserCursorProvider;
-  final double eraserRadiusInPdfPoints;
+  final double Function() eraserRadiusProvider;
   final double pageWidth;
   final double pageHeight;
 
@@ -186,7 +167,7 @@ class _InkPainter extends CustomPainter {
 
   void _paintEraserCursor(Canvas canvas, Offset pdfPoint, {required double scaleX, required double scaleY}) {
     final center = Offset(pdfPoint.dx * scaleX, pdfPoint.dy * scaleY);
-    final radius = eraserRadiusInPdfPoints * scaleX;
+    final radius = eraserRadiusProvider() * scaleX;
     final outer = Paint()
       ..style = PaintingStyle.stroke
       ..color = const Color(0xFF000000)

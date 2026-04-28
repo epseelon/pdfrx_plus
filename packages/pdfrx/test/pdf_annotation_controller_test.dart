@@ -213,14 +213,26 @@ void main() {
   });
 
   group('PdfAnnotationController.setTool', () {
-    test('enterMode resets the tool to pen', () {
+    test('enterMode without override preserves the active tool', () async {
       final controller = PdfAnnotationController();
       controller.enterMode();
       controller.setTool(PdfAnnotationTool.eraser);
       expect(controller.currentToolListenable.value, PdfAnnotationTool.eraser);
 
-      // Simulate exit + re-enter.
+      // Simulate exit + re-enter without a tool override — the previously
+      // selected eraser is remembered.
+      await controller.exitMode(onAnnotationsChanged: null);
       controller.enterMode();
+      expect(controller.currentToolListenable.value, PdfAnnotationTool.eraser);
+    });
+
+    test('enterMode with `tool:` override switches the active tool', () async {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      controller.setTool(PdfAnnotationTool.eraser);
+
+      await controller.exitMode(onAnnotationsChanged: null);
+      controller.enterMode(tool: PdfAnnotationTool.pen);
       expect(controller.currentToolListenable.value, PdfAnnotationTool.pen);
     });
 
@@ -238,6 +250,96 @@ void main() {
 
       controller.setTool(PdfAnnotationTool.pen);
       expect(notifications, 2);
+    });
+  });
+
+  group('PdfAnnotationController stroke style state', () {
+    test('defaults match the documented values', () {
+      final controller = PdfAnnotationController();
+      expect(controller.strokeColor, const Color(0xFFFF3B30));
+      expect(controller.strokeWidth, 2.0);
+      expect(controller.eraserRadius, 10.0);
+    });
+
+    test('setStrokeColor / setStrokeWidth / setEraserRadius update listenables; re-set is no-op', () {
+      final controller = PdfAnnotationController();
+
+      var colorBumps = 0;
+      var widthBumps = 0;
+      var radiusBumps = 0;
+      controller.strokeColorListenable.addListener(() => colorBumps++);
+      controller.strokeWidthListenable.addListener(() => widthBumps++);
+      controller.eraserRadiusListenable.addListener(() => radiusBumps++);
+
+      controller.setStrokeColor(const Color(0xFF00FF00));
+      controller.setStrokeColor(const Color(0xFF00FF00));
+      controller.setStrokeWidth(5.0);
+      controller.setStrokeWidth(5.0);
+      controller.setEraserRadius(20.0);
+      controller.setEraserRadius(20.0);
+
+      expect(colorBumps, 1);
+      expect(widthBumps, 1);
+      expect(radiusBumps, 1);
+      expect(controller.strokeColor, const Color(0xFF00FF00));
+      expect(controller.strokeWidth, 5.0);
+      expect(controller.eraserRadius, 20.0);
+    });
+
+    test('committed strokes inherit the controller\'s current strokeColor / strokeWidth', () {
+      // The layer reads strokeColor/strokeWidth from the controller and
+      // forwards them to startStroke. We exercise startStroke directly
+      // here using the same values.
+      final controller = PdfAnnotationController();
+      controller.setStrokeColor(const Color(0xFF0000FF));
+      controller.setStrokeWidth(4.0);
+      controller.enterMode();
+
+      controller.startStroke(
+        pageIndex: 0,
+        firstPoint: const Offset(0, 0),
+        lineWidth: controller.strokeWidth,
+        strokeColor: controller.strokeColor,
+        opacity: 1.0,
+      );
+      controller.appendPoint(const Offset(10, 10));
+      controller.commitStroke();
+
+      expect(controller.strokes.single.strokeColor, const Color(0xFF0000FF));
+      expect(controller.strokes.single.lineWidth, 4.0);
+    });
+
+    test('enterMode applies non-null overrides and persists them after exitMode', () async {
+      final controller = PdfAnnotationController();
+      controller.enterMode(strokeColor: const Color(0xFF34C759), strokeWidth: 3.0, eraserRadius: 25.0);
+
+      expect(controller.strokeColor, const Color(0xFF34C759));
+      expect(controller.strokeWidth, 3.0);
+      expect(controller.eraserRadius, 25.0);
+
+      await controller.exitMode(onAnnotationsChanged: null);
+
+      // State outlives the session.
+      expect(controller.strokeColor, const Color(0xFF34C759));
+      expect(controller.strokeWidth, 3.0);
+      expect(controller.eraserRadius, 25.0);
+
+      // Re-entering without overrides keeps the values in place.
+      controller.enterMode();
+      expect(controller.strokeColor, const Color(0xFF34C759));
+      expect(controller.strokeWidth, 3.0);
+      expect(controller.eraserRadius, 25.0);
+    });
+
+    test('enterMode with null overrides leaves prior style untouched', () async {
+      final controller = PdfAnnotationController();
+      controller.setStrokeColor(const Color(0xFFAF52DE));
+      controller.setStrokeWidth(8.0);
+
+      controller.enterMode();
+
+      expect(controller.strokeColor, const Color(0xFFAF52DE));
+      expect(controller.strokeWidth, 8.0);
     });
   });
 

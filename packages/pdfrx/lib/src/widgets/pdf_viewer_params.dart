@@ -74,9 +74,6 @@ class PdfViewerParams {
     this.keyHandlerParams = const PdfViewerKeyHandlerParams(),
     this.behaviorControlParams = const PdfViewerBehaviorControlParams(),
     this.forceReload = false,
-    this.annotationStrokeColor = const Color(0xFFFF3B30),
-    this.annotationStrokeWidth = 2.0,
-    this.annotationEraserRadius = 10.0,
     this.onAnnotationsChanged,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
@@ -94,20 +91,6 @@ class PdfViewerParams {
 
   /// Background color of the viewer.
   final Color backgroundColor;
-
-  /// Stroke color used for new freehand ink annotations created in
-  /// annotation mode. Imported strokes carry their own color and ignore
-  /// this default.
-  final Color annotationStrokeColor;
-
-  /// Stroke width (PDF points) for new freehand ink annotations.
-  /// Imported strokes carry their own width and ignore this default.
-  final double annotationStrokeWidth;
-
-  /// Hit radius (PDF points) used by the eraser tool to decide whether a
-  /// stroke is touched by the eraser cursor. Larger values are more
-  /// forgiving but may erase neighbouring strokes.
-  final double annotationEraserRadius;
 
   /// Called once on `PdfViewerController.exitAnnotationMode()` with the
   /// current ink annotations serialized as Instant JSON. The viewer awaits

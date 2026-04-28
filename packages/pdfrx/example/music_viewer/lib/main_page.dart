@@ -69,7 +69,30 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
   }
 
-  Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle) {
+  static const List<Color> _annotationColorPalette = [
+    Color(0xFFFF3B30), // red
+    Color(0xFF000000), // black
+    Color(0xFF007AFF), // blue
+    Color(0xFF34C759), // green
+    Color(0xFFFF9500), // orange
+    Color(0xFFAF52DE), // purple
+  ];
+
+  static const List<double> _penThicknesses = [1.0, 2.0, 3.0, 5.0, 8.0];
+  static const List<double> _eraserSizes = [5.0, 10.0, 20.0, 40.0];
+
+  String _colorName(Color c) {
+    if (c == const Color(0xFFFF3B30)) return 'Red';
+    if (c == const Color(0xFF000000)) return 'Black';
+    if (c == const Color(0xFF007AFF)) return 'Blue';
+    if (c == const Color(0xFF34C759)) return 'Green';
+    if (c == const Color(0xFFFF9500)) return 'Orange';
+    if (c == const Color(0xFFAF52DE)) return 'Purple';
+    return 'Custom';
+  }
+
+  Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle, PdfAnnotationTool tool) {
+    final isPen = tool == PdfAnnotationTool.pen;
     return Material(
       elevation: 8,
       color: Theme.of(context).colorScheme.surface,
@@ -86,19 +109,22 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               ),
             ),
           ),
-          ValueListenableBuilder<PdfAnnotationTool>(
-            valueListenable: controller.annotationToolListenable,
-            builder: (context, tool, _) {
-              final eraserOn = tool == PdfAnnotationTool.eraser;
-              return IconButton(
-                tooltip: eraserOn ? 'Pen' : 'Eraser',
-                icon: Icon(eraserOn ? Icons.edit : Icons.cleaning_services),
-                onPressed: () => controller.setAnnotationTool(
-                  eraserOn ? PdfAnnotationTool.pen : PdfAnnotationTool.eraser,
-                ),
-              );
-            },
+          IconButton.filledTonal(
+            tooltip: 'Pen',
+            isSelected: isPen,
+            selectedIcon: const Icon(Icons.edit),
+            icon: const Icon(Icons.edit_outlined),
+            onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.pen),
           ),
+          IconButton.filledTonal(
+            tooltip: 'Eraser',
+            isSelected: !isPen,
+            selectedIcon: const Icon(Icons.cleaning_services),
+            icon: const Icon(Icons.cleaning_services_outlined),
+            onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.eraser),
+          ),
+          if (isPen) _buildColorButton(),
+          _buildThicknessButton(isPen),
           IconButton(
             tooltip: 'Reset annotations',
             icon: const Icon(Icons.delete_forever),
@@ -109,6 +135,68 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             icon: const Icon(Icons.close),
             onPressed: () => controller.exitAnnotationMode(),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildColorButton() {
+    return ValueListenableBuilder<Color>(
+      valueListenable: controller.annotationStrokeColorListenable,
+      builder: (context, current, _) => PopupMenuButton<Color>(
+        tooltip: 'Color',
+        icon: Icon(Icons.circle, color: current),
+        onSelected: controller.setAnnotationStrokeColor,
+        itemBuilder: (context) => [
+          for (final c in _annotationColorPalette)
+            CheckedPopupMenuItem<Color>(
+              value: c,
+              checked: c == current,
+              child: Row(
+                children: [
+                  Icon(Icons.circle, color: c, size: 20),
+                  const SizedBox(width: 8),
+                  Text(_colorName(c)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildThicknessButton(bool isPen) {
+    if (isPen) {
+      return ValueListenableBuilder<double>(
+        valueListenable: controller.annotationStrokeWidthListenable,
+        builder: (context, current, _) => PopupMenuButton<double>(
+          tooltip: 'Pen thickness',
+          icon: const Icon(Icons.line_weight),
+          onSelected: controller.setAnnotationStrokeWidth,
+          itemBuilder: (context) => [
+            for (final w in _penThicknesses)
+              CheckedPopupMenuItem<double>(
+                value: w,
+                checked: w == current,
+                child: Text('${w.toStringAsFixed(1)} pt'),
+              ),
+          ],
+        ),
+      );
+    }
+    return ValueListenableBuilder<double>(
+      valueListenable: controller.annotationEraserRadiusListenable,
+      builder: (context, current, _) => PopupMenuButton<double>(
+        tooltip: 'Eraser size',
+        icon: const Icon(Icons.line_weight),
+        onSelected: controller.setAnnotationEraserRadius,
+        itemBuilder: (context) => [
+          for (final r in _eraserSizes)
+            CheckedPopupMenuItem<double>(
+              value: r,
+              checked: r == current,
+              child: Text('${r.toStringAsFixed(0)} pt'),
+            ),
         ],
       ),
     );
@@ -363,9 +451,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             builder: (context, annotating, _) {
               if (!annotating) return const SizedBox.shrink();
               return Positioned.fill(
-                child: DraggablePanel(
-                  size: const Size(224, 56),
-                  builder: (context, dragHandle) => _buildAnnotationToolbar(dragHandle),
+                child: ValueListenableBuilder<PdfAnnotationTool>(
+                  valueListenable: controller.annotationToolListenable,
+                  builder: (context, tool, _) {
+                    final isPen = tool == PdfAnnotationTool.pen;
+                    return DraggablePanel(
+                      size: Size(isPen ? 376 : 328, 56),
+                      builder: (context, dragHandle) => _buildAnnotationToolbar(dragHandle, tool),
+                    );
+                  },
                 ),
               );
             },

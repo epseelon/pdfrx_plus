@@ -27,6 +27,9 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<int> _inFlightTick = ValueNotifier<int>(0);
   final ValueNotifier<int> _eraserCursorTick = ValueNotifier<int>(0);
   final ValueNotifier<PdfAnnotationTool> _toolListenable = ValueNotifier<PdfAnnotationTool>(PdfAnnotationTool.pen);
+  final ValueNotifier<Color> _strokeColor = ValueNotifier<Color>(const Color(0xFFFF3B30));
+  final ValueNotifier<double> _strokeWidth = ValueNotifier<double>(2.0);
+  final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
 
   String? _currentCreator;
   _InFlightStroke? _inFlight;
@@ -62,10 +65,36 @@ class PdfAnnotationController extends ChangeNotifier {
   /// changes without polling.
   ValueListenable<bool> get annotationModeListenable => _modeListenable;
 
-  /// Active tool while [annotationModeListenable] is `true`. Resets to
-  /// [PdfAnnotationTool.pen] every time the controller enters annotation
-  /// mode.
+  /// Active tool while [annotationModeListenable] is `true`. Persists
+  /// across mode toggles — calling [enterMode] without a `tool` override
+  /// keeps whatever tool was last selected.
   ValueListenable<PdfAnnotationTool> get currentToolListenable => _toolListenable;
+
+  /// Stroke color applied to every new ink stroke (the layer reads this
+  /// at pan-start and bakes it into the committed annotation). Persists
+  /// across `enterMode` / `exitMode` cycles.
+  ValueListenable<Color> get strokeColorListenable => _strokeColor;
+
+  /// Current stroke color value. See [strokeColorListenable] for change
+  /// notifications.
+  Color get strokeColor => _strokeColor.value;
+
+  /// Stroke width (PDF points) applied to every new ink stroke. Persists
+  /// across `enterMode` / `exitMode` cycles.
+  ValueListenable<double> get strokeWidthListenable => _strokeWidth;
+
+  /// Current stroke width value. See [strokeWidthListenable] for change
+  /// notifications.
+  double get strokeWidth => _strokeWidth.value;
+
+  /// Hit radius (PDF points) used by the eraser tool to decide whether a
+  /// stroke segment is touched, and the size of the on-screen eraser
+  /// cursor preview. Persists across `enterMode` / `exitMode` cycles.
+  ValueListenable<double> get eraserRadiusListenable => _eraserRadius;
+
+  /// Current eraser radius value. See [eraserRadiusListenable] for change
+  /// notifications.
+  double get eraserRadius => _eraserRadius.value;
 
   /// `creatorName` declared by the active annotation session, or `null`
   /// when the caller did not pass one to [enterMode]. New strokes
@@ -73,13 +102,50 @@ class PdfAnnotationController extends ChangeNotifier {
   /// operations (e.g. the eraser) compare against it.
   String? get currentCreator => _currentCreator;
 
-  /// Enter annotation drawing mode. Idempotent — calling while mode is
-  /// already `true` is a no-op (no listener notifications), but the active
-  /// tool is always reset to [PdfAnnotationTool.pen] and [creatorName] is
-  /// stored for the duration of the session.
-  void enterMode({String? creatorName}) {
+  /// Replace the active stroke color. Idempotent — re-setting the same
+  /// color does not fire listeners.
+  void setStrokeColor(Color value) {
+    if (_strokeColor.value == value) return;
+    _strokeColor.value = value;
+  }
+
+  /// Replace the active stroke width (PDF points). Idempotent.
+  void setStrokeWidth(double value) {
+    if (_strokeWidth.value == value) return;
+    _strokeWidth.value = value;
+  }
+
+  /// Replace the active eraser radius (PDF points). Idempotent.
+  void setEraserRadius(double value) {
+    if (_eraserRadius.value == value) return;
+    _eraserRadius.value = value;
+  }
+
+  /// Enter annotation drawing mode.
+  ///
+  /// Idempotent — calling while mode is already `true` does not re-fire
+  /// the mode listener. Any non-null override values ([tool],
+  /// [strokeColor], [strokeWidth], [eraserRadius]) are applied through
+  /// the matching setters; null overrides keep the previously-set value
+  /// (the controller remembers tool/color/thickness across mode
+  /// toggles).
+  ///
+  /// [creatorName] follows a separate lifecycle: it is set on every
+  /// `enterMode` call and cleared on `exitMode`. Pass `null` to enter a
+  /// session whose new strokes are untagged (single-user / legacy
+  /// behavior).
+  void enterMode({
+    String? creatorName,
+    PdfAnnotationTool? tool,
+    Color? strokeColor,
+    double? strokeWidth,
+    double? eraserRadius,
+  }) {
     _currentCreator = creatorName;
-    _toolListenable.value = PdfAnnotationTool.pen;
+    if (tool != null) _toolListenable.value = tool;
+    if (strokeColor != null) setStrokeColor(strokeColor);
+    if (strokeWidth != null) setStrokeWidth(strokeWidth);
+    if (eraserRadius != null) setEraserRadius(eraserRadius);
     if (_modeListenable.value) return;
     _modeListenable.value = true;
   }
@@ -127,19 +193,15 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Replace all strokes by decoding [json] in Instant JSON format.
   ///
   /// [pageCount] bounds-checks `pageIndex` entries; out-of-range entries
-  /// are silently skipped. [defaultColor] / [defaultLineWidth] are used
-  /// when an entry's stroke style is missing.
-  void importJson(
-    String json, {
-    required int pageCount,
-    required Color defaultColor,
-    required double defaultLineWidth,
-  }) {
+  /// are silently skipped. The controller's current [strokeColor] and
+  /// [strokeWidth] are used as fallback defaults when an imported entry
+  /// is missing those fields.
+  void importJson(String json, {required int pageCount}) {
     final decoded = decodeInstantJson(
       json,
       pageCount: pageCount,
-      defaultColor: defaultColor,
-      defaultLineWidth: defaultLineWidth,
+      defaultColor: _strokeColor.value,
+      defaultLineWidth: _strokeWidth.value,
     );
     setAll(decoded);
   }
@@ -384,6 +446,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _inFlightTick.dispose();
     _eraserCursorTick.dispose();
     _toolListenable.dispose();
+    _strokeColor.dispose();
+    _strokeWidth.dispose();
+    _eraserRadius.dispose();
     super.dispose();
   }
 }

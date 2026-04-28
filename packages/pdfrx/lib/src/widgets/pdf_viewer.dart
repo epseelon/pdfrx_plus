@@ -2280,9 +2280,6 @@ class _PdfViewerState extends State<PdfViewer>
               controller: _controller!._annotationController,
               page: page,
               pageRect: rectExternal,
-              newStrokeColor: widget.params.annotationStrokeColor,
-              newStrokeWidth: widget.params.annotationStrokeWidth,
-              eraserRadiusInPdfPoints: widget.params.annotationEraserRadius,
             ),
           ),
         );
@@ -5369,20 +5366,60 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// single-user / legacy contract: strokes are untagged, the eraser
   /// removes any stroke, and the callback receives every stroke.
   ///
-  /// The active tool is reset to [PdfAnnotationTool.pen] on every entry.
-  /// Idempotent — calling while already in annotation mode still applies
-  /// the new [creatorName] / tool reset but does not re-fire listeners.
-  Future<void> enterAnnotationMode({String? creatorName}) async {
-    _annotationController.enterMode(creatorName: creatorName);
+  /// The remaining parameters ([tool], [strokeColor], [strokeWidth],
+  /// [eraserRadius]) are optional overrides for the controller's runtime
+  /// stroke-style state. Non-null values are applied; null leaves the
+  /// previously-set value in place. The controller remembers tool /
+  /// color / thickness / eraser radius across `enterAnnotationMode`
+  /// → `exitAnnotationMode` cycles, so a user picking red 3pt in one
+  /// session sees red 3pt selected when they re-enter mode later.
+  ///
+  /// Idempotent — calling while already in annotation mode applies the
+  /// overrides but does not re-fire mode listeners.
+  Future<void> enterAnnotationMode({
+    String? creatorName,
+    PdfAnnotationTool? tool,
+    Color? strokeColor,
+    double? strokeWidth,
+    double? eraserRadius,
+  }) async {
+    _annotationController.enterMode(
+      creatorName: creatorName,
+      tool: tool,
+      strokeColor: strokeColor,
+      strokeWidth: strokeWidth,
+      eraserRadius: eraserRadius,
+    );
   }
 
   /// Switch the active annotation tool. Only meaningful while
   /// [annotationModeListenable] is `true`. Idempotent.
   void setAnnotationTool(PdfAnnotationTool tool) => _annotationController.setTool(tool);
 
-  /// Listenable carrying the active annotation tool. Resets to
-  /// [PdfAnnotationTool.pen] on every [enterAnnotationMode] call.
+  /// Listenable carrying the active annotation tool. Persists across
+  /// `enterAnnotationMode` / `exitAnnotationMode` cycles.
   ValueListenable<PdfAnnotationTool> get annotationToolListenable => _annotationController.currentToolListenable;
+
+  /// Replace the active stroke color used for new ink strokes. See
+  /// [annotationStrokeColorListenable] for change notifications.
+  void setAnnotationStrokeColor(Color value) => _annotationController.setStrokeColor(value);
+
+  /// Listenable carrying the active stroke color.
+  ValueListenable<Color> get annotationStrokeColorListenable => _annotationController.strokeColorListenable;
+
+  /// Replace the active stroke width (PDF points) used for new ink
+  /// strokes.
+  void setAnnotationStrokeWidth(double value) => _annotationController.setStrokeWidth(value);
+
+  /// Listenable carrying the active stroke width.
+  ValueListenable<double> get annotationStrokeWidthListenable => _annotationController.strokeWidthListenable;
+
+  /// Replace the active eraser hit radius (PDF points). The on-screen
+  /// eraser cursor preview resizes immediately to match.
+  void setAnnotationEraserRadius(double value) => _annotationController.setEraserRadius(value);
+
+  /// Listenable carrying the active eraser radius.
+  ValueListenable<double> get annotationEraserRadiusListenable => _annotationController.eraserRadiusListenable;
 
   /// Exit annotation drawing mode.
   ///
@@ -5409,13 +5446,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   void applyAnnotationsFromJson(String json) {
     final state = __state;
     final pageCount = state?._document?.pages.length ?? 0;
-    final params = state?.widget.params;
-    _annotationController.importJson(
-      json,
-      pageCount: pageCount,
-      defaultColor: params?.annotationStrokeColor ?? const Color(0xFFFF3B30),
-      defaultLineWidth: params?.annotationStrokeWidth ?? 2.0,
-    );
+    _annotationController.importJson(json, pageCount: pageCount);
   }
 
   /// Serialize all current ink annotations as Instant JSON.
