@@ -47,6 +47,6 @@ pubspec_overrides.yaml
 **/ios/**/*.xcodeproj/project.pbxproj
 **/macos/**/*.xcodeproj/project.pbxproj
 
-build/ios/
+build/
 
 .flutter-plugins-dependencies
