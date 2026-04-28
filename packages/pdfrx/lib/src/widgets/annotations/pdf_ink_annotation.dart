@@ -18,6 +18,7 @@ class PdfInkAnnotation {
     required this.opacity,
     required this.createdAt,
     required this.updatedAt,
+    this.creatorName,
   });
 
   /// 0-based page index this stroke is anchored to.
@@ -44,4 +45,13 @@ class PdfInkAnnotation {
   /// When the stroke was last modified (same as [createdAt] for new strokes
   /// that have not been edited).
   final DateTime updatedAt;
+
+  /// Identifier of the user who created this stroke, or `null` when the
+  /// caller has not declared an identity (single-user / legacy mode).
+  ///
+  /// Maps directly to Instant JSON's `creatorName` field. Used by the
+  /// annotation controller to scope ownership-aware operations such as the
+  /// eraser tool, which only removes strokes whose [creatorName] matches the
+  /// current annotation session.
+  final String? creatorName;
 }

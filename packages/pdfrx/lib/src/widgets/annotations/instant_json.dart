@@ -38,6 +38,7 @@ Map<String, dynamic> _encodeInkEntry(PdfInkAnnotation a) {
     'lineWidth': a.lineWidth,
     'isDrawnNaturally': false,
     'strokeColor': colorToHex(a.strokeColor),
+    if (a.creatorName != null) 'creatorName': a.creatorName,
   };
 }
 
@@ -144,6 +145,9 @@ PdfInkAnnotation? _decodeInkEntry(
   final createdAt = _parseTimestamp(entry['createdAt']) ?? DateTime.now().toUtc();
   final updatedAt = _parseTimestamp(entry['updatedAt']) ?? createdAt;
 
+  final rawCreatorName = entry['creatorName'];
+  final creatorName = rawCreatorName is String ? rawCreatorName : null;
+
   return PdfInkAnnotation(
     pageIndex: pageIndex,
     pointsInPdfSpace: points,
@@ -152,6 +156,7 @@ PdfInkAnnotation? _decodeInkEntry(
     opacity: opacity,
     createdAt: createdAt,
     updatedAt: updatedAt,
+    creatorName: creatorName,
   );
 }
 

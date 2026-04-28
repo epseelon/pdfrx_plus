@@ -13,7 +13,10 @@ import 'pdf_ink_annotation.dart';
 ///
 /// While [PdfAnnotationController.annotationModeListenable] is `true`, a
 /// per-page [GestureDetector] is mounted on top of the painter to capture
-/// pan input. Page rotation is assumed to be `0°` (see spec §17).
+/// pan input. The active tool ([PdfAnnotationController.currentToolListenable])
+/// determines whether pan input draws ([PdfAnnotationTool.pen]) or erases
+/// ([PdfAnnotationTool.eraser]). Page rotation is assumed to be `0°`
+/// (see spec §17).
 class PdfAnnotationLayer extends StatelessWidget {
   const PdfAnnotationLayer({
     required this.controller,
@@ -21,6 +24,7 @@ class PdfAnnotationLayer extends StatelessWidget {
     required this.pageRect,
     required this.newStrokeColor,
     required this.newStrokeWidth,
+    required this.eraserRadiusInPdfPoints,
     super.key,
   });
 
@@ -36,6 +40,10 @@ class PdfAnnotationLayer extends StatelessWidget {
   /// Imported strokes carry their own width and ignore this default.
   final double newStrokeWidth;
 
+  /// Hit radius (PDF points) applied to the eraser tool's per-pan-update
+  /// stroke removal sweep.
+  final double eraserRadiusInPdfPoints;
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -48,7 +56,13 @@ class PdfAnnotationLayer extends StatelessWidget {
               painter: _InkPainter(
                 strokes: committed,
                 inFlightProvider: () => controller.inFlightStrokesFor(page.pageNumber - 1),
-                inFlightRepaint: controller.inFlightChangedListenable,
+                eraserCursorProvider: () =>
+                    controller.eraserCursorPageIndex == page.pageNumber - 1 ? controller.eraserCursorPdfPoint : null,
+                eraserRadiusInPdfPoints: eraserRadiusInPdfPoints,
+                repaint: Listenable.merge([
+                  controller.inFlightChangedListenable,
+                  controller.eraserCursorChangedListenable,
+                ]),
                 pageWidth: page.width,
                 pageHeight: page.height,
               ),
@@ -59,12 +73,15 @@ class PdfAnnotationLayer extends StatelessWidget {
               builder: (context, modeOn, _) {
                 if (!modeOn) return const SizedBox.shrink();
                 return Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onPanStart: (details) => _onPanStart(details.localPosition),
-                    onPanUpdate: (details) => _onPanUpdate(details.localPosition),
-                    onPanEnd: (_) => controller.commitStroke(),
-                    onPanCancel: controller.cancelStroke,
+                  child: ValueListenableBuilder<PdfAnnotationTool>(
+                    valueListenable: controller.currentToolListenable,
+                    builder: (context, tool, _) => GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: (details) => _onPanStart(tool, details.localPosition),
+                      onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
+                      onPanEnd: (_) => _onPanEnd(tool),
+                      onPanCancel: () => _onPanCancel(tool),
+                    ),
                   ),
                 );
               },
@@ -75,21 +92,57 @@ class PdfAnnotationLayer extends StatelessWidget {
     );
   }
 
-  void _onPanStart(Offset local) {
-    final inFlightPage = controller.inFlightPageIndex;
-    if (inFlightPage != null) return;
-    controller.startStroke(
-      pageIndex: page.pageNumber - 1,
-      firstPoint: _toPdfSpace(local),
-      lineWidth: newStrokeWidth,
-      strokeColor: newStrokeColor,
-      opacity: 1.0,
-    );
+  void _onPanStart(PdfAnnotationTool tool, Offset local) {
+    switch (tool) {
+      case PdfAnnotationTool.pen:
+        final inFlightPage = controller.inFlightPageIndex;
+        if (inFlightPage != null) return;
+        controller.startStroke(
+          pageIndex: page.pageNumber - 1,
+          firstPoint: _toPdfSpace(local),
+          lineWidth: newStrokeWidth,
+          strokeColor: newStrokeColor,
+          opacity: 1.0,
+        );
+      case PdfAnnotationTool.eraser:
+        controller.startErase(
+          pageIndex: page.pageNumber - 1,
+          pdfPoint: _toPdfSpace(local),
+          radiusInPdfPoints: eraserRadiusInPdfPoints,
+        );
+    }
   }
 
-  void _onPanUpdate(Offset local) {
-    if (controller.inFlightPageIndex != page.pageNumber - 1) return;
-    controller.appendPoint(_toPdfSpace(local));
+  void _onPanUpdate(PdfAnnotationTool tool, Offset local) {
+    switch (tool) {
+      case PdfAnnotationTool.pen:
+        if (controller.inFlightPageIndex != page.pageNumber - 1) return;
+        controller.appendPoint(_toPdfSpace(local));
+      case PdfAnnotationTool.eraser:
+        controller.continueErase(
+          pageIndex: page.pageNumber - 1,
+          pdfPoint: _toPdfSpace(local),
+          radiusInPdfPoints: eraserRadiusInPdfPoints,
+        );
+    }
+  }
+
+  void _onPanEnd(PdfAnnotationTool tool) {
+    switch (tool) {
+      case PdfAnnotationTool.pen:
+        controller.commitStroke();
+      case PdfAnnotationTool.eraser:
+        controller.endErase();
+    }
+  }
+
+  void _onPanCancel(PdfAnnotationTool tool) {
+    switch (tool) {
+      case PdfAnnotationTool.pen:
+        controller.cancelStroke();
+      case PdfAnnotationTool.eraser:
+        controller.endErase();
+    }
   }
 
   Offset _toPdfSpace(Offset local) =>
@@ -100,13 +153,17 @@ class _InkPainter extends CustomPainter {
   _InkPainter({
     required this.strokes,
     required this.inFlightProvider,
-    required Listenable inFlightRepaint,
+    required this.eraserCursorProvider,
+    required this.eraserRadiusInPdfPoints,
+    required Listenable repaint,
     required this.pageWidth,
     required this.pageHeight,
-  }) : super(repaint: inFlightRepaint);
+  }) : super(repaint: repaint);
 
   final List<PdfInkAnnotation> strokes;
   final Iterable<PdfInkAnnotation> Function() inFlightProvider;
+  final Offset? Function() eraserCursorProvider;
+  final double eraserRadiusInPdfPoints;
   final double pageWidth;
   final double pageHeight;
 
@@ -121,6 +178,25 @@ class _InkPainter extends CustomPainter {
     for (final stroke in inFlightProvider()) {
       _paintStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
     }
+    final cursor = eraserCursorProvider();
+    if (cursor != null) {
+      _paintEraserCursor(canvas, cursor, scaleX: scaleX, scaleY: scaleY);
+    }
+  }
+
+  void _paintEraserCursor(Canvas canvas, Offset pdfPoint, {required double scaleX, required double scaleY}) {
+    final center = Offset(pdfPoint.dx * scaleX, pdfPoint.dy * scaleY);
+    final radius = eraserRadiusInPdfPoints * scaleX;
+    final outer = Paint()
+      ..style = PaintingStyle.stroke
+      ..color = const Color(0xFF000000)
+      ..strokeWidth = 1.5;
+    final inner = Paint()
+      ..style = PaintingStyle.stroke
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 0.75;
+    canvas.drawCircle(center, radius, outer);
+    canvas.drawCircle(center, radius, inner);
   }
 
   void _paintStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {

@@ -19,6 +19,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final controller = PdfViewerController();
   final _currentPage = ValueNotifier<int>(1);
 
+  final String _creatorName = 'alice';
+
   int? _fileIndex;
   bool _twoPageMode = true;
   bool _gotoLastOnReady = false;
@@ -64,6 +66,25 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   void _togglePageMode() {
     setState(() => _twoPageMode = !_twoPageMode);
     WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
+  }
+
+  Future<void> _confirmResetAnnotations() async {
+    final idx = _fileIndex;
+    if (idx == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset annotations?'),
+        content: const Text('Delete all annotations for this document. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    controller.clearAnnotations();
+    await deleteAnnotations(widget.pdfFilePaths[idx]);
   }
 
   int get _step => _twoPageMode ? 2 : 1;
@@ -274,7 +295,9 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     FloatingActionButton(
                       heroTag: 'annotate',
                       tooltip: 'Annotate',
-                      onPressed: () => controller.enterAnnotationMode(),
+                      onPressed: () => controller.enterAnnotationMode(
+                        creatorName: _creatorName,
+                      ),
                       child: const Icon(Icons.edit),
                     ),
                     const SizedBox(height: 16),
@@ -307,6 +330,24 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
+                          ValueListenableBuilder<PdfAnnotationTool>(
+                            valueListenable: controller.annotationToolListenable,
+                            builder: (context, tool, _) {
+                              final eraserOn = tool == PdfAnnotationTool.eraser;
+                              return IconButton(
+                                tooltip: eraserOn ? 'Pen' : 'Eraser',
+                                icon: Icon(eraserOn ? Icons.edit : Icons.cleaning_services),
+                                onPressed: () => controller.setAnnotationTool(
+                                  eraserOn ? PdfAnnotationTool.pen : PdfAnnotationTool.eraser,
+                                ),
+                              );
+                            },
+                          ),
+                          IconButton(
+                            tooltip: 'Reset annotations',
+                            icon: const Icon(Icons.delete_forever),
+                            onPressed: _confirmResetAnnotations,
+                          ),
                           IconButton(
                             tooltip: 'Close',
                             icon: const Icon(Icons.close),

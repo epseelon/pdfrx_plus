@@ -45,6 +45,25 @@ void main() {
     expect(loaded, equals('second'));
   });
 
+  test('deleteAnnotations after writeAnnotations removes the file', () async {
+    const path = '/some/absolute/path/score.pdf';
+    await writeAnnotations(path, '{}', overrideTempDir: tempDir);
+
+    await deleteAnnotations(path, overrideTempDir: tempDir);
+
+    expect(await readAnnotations(path, overrideTempDir: tempDir), isNull);
+    final files = Directory('${tempDir.path}/pdfrx_annotations').listSync().whereType<File>().toList();
+    expect(files, isEmpty);
+  });
+
+  test('deleteAnnotations on a path that has never been written is a no-op', () async {
+    await deleteAnnotations(
+      '/never/written/score.pdf',
+      overrideTempDir: tempDir,
+    );
+    expect(await readAnnotations('/never/written/score.pdf', overrideTempDir: tempDir), isNull);
+  });
+
   test('SHA-1-keyed filename: same path produces same file, different paths produce different files', () async {
     const pathA = '/docs/score-a.pdf';
     const pathB = '/docs/score-b.pdf';

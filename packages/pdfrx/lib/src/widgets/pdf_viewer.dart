@@ -2282,6 +2282,7 @@ class _PdfViewerState extends State<PdfViewer>
               pageRect: rectExternal,
               newStrokeColor: widget.params.annotationStrokeColor,
               newStrokeWidth: widget.params.annotationStrokeWidth,
+              eraserRadiusInPdfPoints: widget.params.annotationEraserRadius,
             ),
           ),
         );
@@ -5359,10 +5360,29 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// `goToDest`, `goTo`). Per-page gesture detectors capture pan input
   /// and route it to the ink annotation layer.
   ///
-  /// Idempotent — calling while already in annotation mode is a no-op.
-  Future<void> enterAnnotationMode() async {
-    _annotationController.enterMode();
+  /// When [creatorName] is non-null, every stroke committed during this
+  /// session is tagged with it (Instant JSON's `creatorName` field), the
+  /// eraser tool only removes strokes whose `creatorName` matches this
+  /// value (so foreign / shared strokes are preserved), and the
+  /// `onAnnotationsChanged` callback fires with JSON filtered down to
+  /// just this user's strokes. When `null` (default), behavior is the
+  /// single-user / legacy contract: strokes are untagged, the eraser
+  /// removes any stroke, and the callback receives every stroke.
+  ///
+  /// The active tool is reset to [PdfAnnotationTool.pen] on every entry.
+  /// Idempotent — calling while already in annotation mode still applies
+  /// the new [creatorName] / tool reset but does not re-fire listeners.
+  Future<void> enterAnnotationMode({String? creatorName}) async {
+    _annotationController.enterMode(creatorName: creatorName);
   }
+
+  /// Switch the active annotation tool. Only meaningful while
+  /// [annotationModeListenable] is `true`. Idempotent.
+  void setAnnotationTool(PdfAnnotationTool tool) => _annotationController.setTool(tool);
+
+  /// Listenable carrying the active annotation tool. Resets to
+  /// [PdfAnnotationTool.pen] on every [enterAnnotationMode] call.
+  ValueListenable<PdfAnnotationTool> get annotationToolListenable => _annotationController.currentToolListenable;
 
   /// Exit annotation drawing mode.
   ///

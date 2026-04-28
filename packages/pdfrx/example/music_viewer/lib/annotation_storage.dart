@@ -62,3 +62,23 @@ Future<void> writeAnnotations(
     debugPrint('writeAnnotations failed for $absolutePdfPath: $e\n$st');
   }
 }
+
+/// Removes the annotations file for [absolutePdfPath], if any. No-op when
+/// no file has been written for that path. I/O failures are caught and
+/// logged.
+Future<void> deleteAnnotations(
+  String absolutePdfPath, {
+  Directory? overrideTempDir,
+}) async {
+  try {
+    final file = await annotationsFileFor(
+      absolutePdfPath,
+      overrideTempDir: overrideTempDir,
+    );
+    if (await file.exists()) {
+      await file.delete();
+    }
+  } catch (e, st) {
+    debugPrint('deleteAnnotations failed for $absolutePdfPath: $e\n$st');
+  }
+}

@@ -10,5 +10,6 @@ export 'src/widgets/pdf_viewer_params.dart';
 export 'src/widgets/pdf_viewer_scroll_thumb.dart';
 export 'src/widgets/pdf_widgets.dart';
 export 'src/widgets/annotations/instant_json.dart';
+export 'src/widgets/annotations/pdf_annotation_controller.dart' show PdfAnnotationTool;
 export 'src/widgets/annotations/pdf_ink_annotation.dart';
 export 'src/utils/fixed_overscroll_physics.dart';

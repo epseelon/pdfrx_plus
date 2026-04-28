@@ -169,6 +169,57 @@ void main() {
       ]);
     });
 
+    test('encodes creatorName when present and omits the key when null', () {
+      final tagged = PdfInkAnnotation(
+        pageIndex: 0,
+        pointsInPdfSpace: const [Offset(0, 0), Offset(1, 1)],
+        lineWidth: 1.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+        createdAt: DateTime.utc(2024, 1, 1),
+        updatedAt: DateTime.utc(2024, 1, 1),
+        creatorName: 'alice',
+      );
+      final untagged = PdfInkAnnotation(
+        pageIndex: 0,
+        pointsInPdfSpace: const [Offset(0, 0), Offset(2, 2)],
+        lineWidth: 1.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+        createdAt: DateTime.utc(2024, 1, 1),
+        updatedAt: DateTime.utc(2024, 1, 1),
+      );
+
+      final decoded = jsonDecode(encodeInstantJson([tagged, untagged])) as Map<String, dynamic>;
+      final entries = (decoded['annotations'] as List).cast<Map<String, dynamic>>();
+      expect(entries[0]['creatorName'], 'alice');
+      expect(entries[1].containsKey('creatorName'), isFalse);
+    });
+
+    test('decodes creatorName when present, leaves it null when missing or non-string', () {
+      const json = '''
+        {
+          "annotations": [
+            {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000", "creatorName": "bob"},
+            {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[2,2],[3,3]]]}, "lineWidth": 1, "strokeColor": "#000000"},
+            {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[4,4],[5,5]]]}, "lineWidth": 1, "strokeColor": "#000000", "creatorName": 42}
+          ]
+        }
+      ''';
+
+      final result = decodeInstantJson(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 1.0,
+      );
+
+      expect(result, hasLength(3));
+      expect(result[0].creatorName, 'bob');
+      expect(result[1].creatorName, isNull);
+      expect(result[2].creatorName, isNull);
+    });
+
     test('encode -> decode round-trip preserves stroke data', () {
       final original = [
         PdfInkAnnotation(
@@ -179,6 +230,7 @@ void main() {
           opacity: 1.0,
           createdAt: DateTime.utc(2024, 6, 15, 10, 30, 0),
           updatedAt: DateTime.utc(2024, 6, 15, 10, 30, 0),
+          creatorName: 'alice',
         ),
         PdfInkAnnotation(
           pageIndex: 2,
@@ -205,6 +257,7 @@ void main() {
         expect(decoded[i].lineWidth, closeTo(original[i].lineWidth, 1e-9));
         expect(decoded[i].strokeColor, original[i].strokeColor);
         expect(decoded[i].opacity, closeTo(original[i].opacity, 1e-9));
+        expect(decoded[i].creatorName, original[i].creatorName);
         for (var j = 0; j < original[i].pointsInPdfSpace.length; j++) {
           expect(decoded[i].pointsInPdfSpace[j].dx, closeTo(original[i].pointsInPdfSpace[j].dx, 1e-6));
           expect(decoded[i].pointsInPdfSpace[j].dy, closeTo(original[i].pointsInPdfSpace[j].dy, 1e-6));
