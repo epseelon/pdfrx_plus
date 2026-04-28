@@ -18,11 +18,24 @@ import 'pdf_ink_annotation.dart';
 /// ([PdfAnnotationTool.eraser]). Page rotation is assumed to be `0°`
 /// (see spec §17).
 class PdfAnnotationLayer extends StatelessWidget {
-  const PdfAnnotationLayer({required this.controller, required this.page, required this.pageRect, super.key});
+  const PdfAnnotationLayer({
+    required this.controller,
+    required this.page,
+    required this.pageRect,
+    required this.highlighterOpacity,
+    super.key,
+  });
 
   final PdfAnnotationController controller;
   final PdfPage page;
   final Rect pageRect;
+
+  /// Opacity stamped onto every newly-committed highlighter stroke. The
+  /// caller (the `PdfViewer`) sources this from
+  /// `PdfViewerParams.highlighterOpacity`. The layer clamps to
+  /// `[0.0, 1.0]` at use time, so out-of-range values from the params
+  /// are silently coerced rather than rejected.
+  final double highlighterOpacity;
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +46,7 @@ class PdfAnnotationLayer extends StatelessWidget {
         return Stack(
           children: [
             CustomPaint(
-              painter: _InkPainter(
+              painter: InkPainter(
                 strokes: committed,
                 inFlightProvider: () => controller.inFlightStrokesFor(page.pageNumber - 1),
                 eraserCursorProvider: () =>
@@ -84,6 +97,18 @@ class PdfAnnotationLayer extends StatelessWidget {
           lineWidth: controller.strokeWidth,
           strokeColor: controller.strokeColor,
           opacity: 1.0,
+          kind: PdfInkAnnotationKind.pen,
+        );
+      case PdfAnnotationTool.highlighter:
+        final inFlightPage = controller.inFlightPageIndex;
+        if (inFlightPage != null) return;
+        controller.startStroke(
+          pageIndex: page.pageNumber - 1,
+          firstPoint: _toPdfSpace(local),
+          lineWidth: controller.highlighterWidth,
+          strokeColor: controller.highlighterColor,
+          opacity: highlighterOpacity.clamp(0.0, 1.0),
+          kind: PdfInkAnnotationKind.highlighter,
         );
       case PdfAnnotationTool.eraser:
         controller.startErase(
@@ -97,6 +122,7 @@ class PdfAnnotationLayer extends StatelessWidget {
   void _onPanUpdate(PdfAnnotationTool tool, Offset local) {
     switch (tool) {
       case PdfAnnotationTool.pen:
+      case PdfAnnotationTool.highlighter:
         if (controller.inFlightPageIndex != page.pageNumber - 1) return;
         controller.appendPoint(_toPdfSpace(local));
       case PdfAnnotationTool.eraser:
@@ -111,6 +137,7 @@ class PdfAnnotationLayer extends StatelessWidget {
   void _onPanEnd(PdfAnnotationTool tool) {
     switch (tool) {
       case PdfAnnotationTool.pen:
+      case PdfAnnotationTool.highlighter:
         controller.commitStroke();
       case PdfAnnotationTool.eraser:
         controller.endErase();
@@ -120,6 +147,7 @@ class PdfAnnotationLayer extends StatelessWidget {
   void _onPanCancel(PdfAnnotationTool tool) {
     switch (tool) {
       case PdfAnnotationTool.pen:
+      case PdfAnnotationTool.highlighter:
         controller.cancelStroke();
       case PdfAnnotationTool.eraser:
         controller.endErase();
@@ -130,8 +158,9 @@ class PdfAnnotationLayer extends StatelessWidget {
       Offset(local.dx * page.width / pageRect.width, local.dy * page.height / pageRect.height);
 }
 
-class _InkPainter extends CustomPainter {
-  _InkPainter({
+@visibleForTesting
+class InkPainter extends CustomPainter {
+  InkPainter({
     required this.strokes,
     required this.inFlightProvider,
     required this.eraserCursorProvider,
@@ -181,12 +210,16 @@ class _InkPainter extends CustomPainter {
   }
 
   void _paintStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {
+    final (cap, join) = switch (stroke.kind) {
+      PdfInkAnnotationKind.pen => (StrokeCap.round, StrokeJoin.round),
+      PdfInkAnnotationKind.highlighter => (StrokeCap.butt, StrokeJoin.miter),
+    };
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..color = stroke.strokeColor.withValues(alpha: stroke.opacity)
       ..strokeWidth = stroke.lineWidth * scaleX
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
+      ..strokeCap = cap
+      ..strokeJoin = join;
     final points = stroke.pointsInPdfSpace;
     if (points.isEmpty) return;
     final path = Path()..moveTo(points.first.dx * scaleX, points.first.dy * scaleY);
@@ -197,6 +230,6 @@ class _InkPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_InkPainter old) =>
+  bool shouldRepaint(InkPainter old) =>
       !identical(old.strokes, strokes) || old.pageWidth != pageWidth || old.pageHeight != pageHeight;
 }

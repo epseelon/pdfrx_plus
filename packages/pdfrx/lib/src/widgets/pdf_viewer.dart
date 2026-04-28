@@ -2280,6 +2280,7 @@ class _PdfViewerState extends State<PdfViewer>
               controller: _controller!._annotationController,
               page: page,
               pageRect: rectExternal,
+              highlighterOpacity: widget.params.highlighterOpacity,
             ),
           ),
         );

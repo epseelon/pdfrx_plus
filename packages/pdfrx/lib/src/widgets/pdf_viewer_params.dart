@@ -75,6 +75,7 @@ class PdfViewerParams {
     this.behaviorControlParams = const PdfViewerBehaviorControlParams(),
     this.forceReload = false,
     this.onAnnotationsChanged,
+    this.highlighterOpacity = 0.35,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -98,6 +99,18 @@ class PdfViewerParams {
   ///
   /// Not fired by `applyAnnotationsFromJson` or `clearAnnotations`.
   final PdfAnnotationsChangedCallback? onAnnotationsChanged;
+
+  /// Opacity stamped onto every newly-committed highlighter
+  /// ([PdfAnnotationTool.highlighter]) stroke. Default `0.35`. Clamped
+  /// to `[0.0, 1.0]` at use time.
+  ///
+  /// This is an integrator-level styling decision, not a user-tunable
+  /// per-session knob: there is no controller setter, no
+  /// [ValueListenable], and no `enterAnnotationMode` parameter for it
+  /// in v1. Changing the value mid-session requires rebuilding the
+  /// `PdfViewer` with new params; already-committed strokes retain
+  /// their original opacity, only newly-drawn strokes see the change.
+  final double highlighterOpacity;
 
   /// Function to customize the layout of the pages.
   ///
@@ -766,6 +779,7 @@ class PdfViewerParams {
         other.keyHandlerParams == keyHandlerParams &&
         other.behaviorControlParams == behaviorControlParams &&
         other.forceReload == forceReload &&
+        other.highlighterOpacity == highlighterOpacity &&
         other.scrollPhysics == scrollPhysics;
   }
 
@@ -827,6 +841,7 @@ class PdfViewerParams {
         keyHandlerParams.hashCode ^
         behaviorControlParams.hashCode ^
         forceReload.hashCode ^
+        highlighterOpacity.hashCode ^
         scrollPhysics.hashCode;
   }
 }

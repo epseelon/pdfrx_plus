@@ -9,8 +9,14 @@ import 'pdf_ink_annotation.dart';
 /// Active annotation tool while [PdfAnnotationController.annotationModeListenable]
 /// is `true`.
 enum PdfAnnotationTool {
-  /// Default. Pan input creates new ink strokes.
+  /// Default. Pan input creates new opaque round-capped ink strokes.
   pen,
+
+  /// Pan input creates new translucent butt-capped highlighter strokes.
+  /// Color and width are tracked separately from the pen via
+  /// [PdfAnnotationController.highlighterColor] / [PdfAnnotationController.highlighterWidth];
+  /// opacity is sourced at draw time from `PdfViewerParams.highlighterOpacity`.
+  highlighter,
 
   /// Pan input erases existing strokes that the current session owns.
   eraser,
@@ -29,6 +35,8 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<PdfAnnotationTool> _toolListenable = ValueNotifier<PdfAnnotationTool>(PdfAnnotationTool.pen);
   final ValueNotifier<Color> _strokeColor = ValueNotifier<Color>(const Color(0xFFFF3B30));
   final ValueNotifier<double> _strokeWidth = ValueNotifier<double>(2.0);
+  final ValueNotifier<Color> _highlighterColor = ValueNotifier<Color>(const Color(0xFFFFFF00));
+  final ValueNotifier<double> _highlighterWidth = ValueNotifier<double>(12.0);
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
   final List<List<PdfInkAnnotation>> _undoStack = [];
   final List<List<PdfInkAnnotation>> _redoStack = [];
@@ -74,22 +82,46 @@ class PdfAnnotationController extends ChangeNotifier {
   /// keeps whatever tool was last selected.
   ValueListenable<PdfAnnotationTool> get currentToolListenable => _toolListenable;
 
-  /// Stroke color applied to every new ink stroke (the layer reads this
-  /// at pan-start and bakes it into the committed annotation). Persists
-  /// across `enterMode` / `exitMode` cycles.
+  /// Pen-scoped stroke color applied to every new ink stroke when the
+  /// active tool is [PdfAnnotationTool.pen] (the layer reads this at
+  /// pan-start and bakes it into the committed annotation). The
+  /// highlighter has its own [highlighterColorListenable] — switching
+  /// tools does not clobber the other tool's settings. Persists across
+  /// `enterMode` / `exitMode` cycles.
   ValueListenable<Color> get strokeColorListenable => _strokeColor;
 
-  /// Current stroke color value. See [strokeColorListenable] for change
-  /// notifications.
+  /// Current pen stroke color value. See [strokeColorListenable] for
+  /// change notifications.
   Color get strokeColor => _strokeColor.value;
 
-  /// Stroke width (PDF points) applied to every new ink stroke. Persists
+  /// Pen-scoped stroke width (PDF points) applied to every new ink
+  /// stroke when the active tool is [PdfAnnotationTool.pen]. The
+  /// highlighter has its own [highlighterWidthListenable]. Persists
   /// across `enterMode` / `exitMode` cycles.
   ValueListenable<double> get strokeWidthListenable => _strokeWidth;
 
-  /// Current stroke width value. See [strokeWidthListenable] for change
-  /// notifications.
+  /// Current pen stroke width value. See [strokeWidthListenable] for
+  /// change notifications.
   double get strokeWidth => _strokeWidth.value;
+
+  /// Highlighter-scoped stroke color applied to every new highlighter
+  /// stroke (the layer reads this at pan-start and bakes it into the
+  /// committed annotation). Persists across `enterMode` / `exitMode`
+  /// cycles.
+  ValueListenable<Color> get highlighterColorListenable => _highlighterColor;
+
+  /// Current highlighter color value. See [highlighterColorListenable]
+  /// for change notifications.
+  Color get highlighterColor => _highlighterColor.value;
+
+  /// Highlighter-scoped stroke width (PDF points) applied to every new
+  /// highlighter stroke. Persists across `enterMode` / `exitMode`
+  /// cycles.
+  ValueListenable<double> get highlighterWidthListenable => _highlighterWidth;
+
+  /// Current highlighter width value. See [highlighterWidthListenable]
+  /// for change notifications.
+  double get highlighterWidth => _highlighterWidth.value;
 
   /// Hit radius (PDF points) used by the eraser tool to decide whether a
   /// stroke segment is touched, and the size of the on-screen eraser
@@ -127,6 +159,19 @@ class PdfAnnotationController extends ChangeNotifier {
     _strokeWidth.value = value;
   }
 
+  /// Replace the active highlighter color. Idempotent — re-setting the
+  /// same color does not fire listeners.
+  void setHighlighterColor(Color value) {
+    if (_highlighterColor.value == value) return;
+    _highlighterColor.value = value;
+  }
+
+  /// Replace the active highlighter width (PDF points). Idempotent.
+  void setHighlighterWidth(double value) {
+    if (_highlighterWidth.value == value) return;
+    _highlighterWidth.value = value;
+  }
+
   /// Replace the active eraser radius (PDF points). Idempotent.
   void setEraserRadius(double value) {
     if (_eraserRadius.value == value) return;
@@ -137,10 +182,16 @@ class PdfAnnotationController extends ChangeNotifier {
   ///
   /// Idempotent — calling while mode is already `true` does not re-fire
   /// the mode listener. Any non-null override values ([tool],
-  /// [strokeColor], [strokeWidth], [eraserRadius]) are applied through
-  /// the matching setters; null overrides keep the previously-set value
-  /// (the controller remembers tool/color/thickness across mode
-  /// toggles).
+  /// [strokeColor], [strokeWidth], [highlighterColor], [highlighterWidth],
+  /// [eraserRadius]) are applied through the matching setters; null
+  /// overrides keep the previously-set value (the controller remembers
+  /// tool/color/thickness across mode toggles).
+  ///
+  /// Per-tool overrides apply regardless of which tool is active —
+  /// passing `highlighterColor:` while the pen is selected updates the
+  /// highlighter's remembered color; the change becomes visible to the
+  /// user only when they switch to the highlighter (or the same call
+  /// also passes `tool: PdfAnnotationTool.highlighter`).
   ///
   /// [creatorName] follows a separate lifecycle: it is set on every
   /// `enterMode` call and cleared on `exitMode`. Pass `null` to enter a
@@ -151,12 +202,16 @@ class PdfAnnotationController extends ChangeNotifier {
     PdfAnnotationTool? tool,
     Color? strokeColor,
     double? strokeWidth,
+    Color? highlighterColor,
+    double? highlighterWidth,
     double? eraserRadius,
   }) {
     _currentCreator = creatorName;
     if (tool != null) _toolListenable.value = tool;
     if (strokeColor != null) setStrokeColor(strokeColor);
     if (strokeWidth != null) setStrokeWidth(strokeWidth);
+    if (highlighterColor != null) setHighlighterColor(highlighterColor);
+    if (highlighterWidth != null) setHighlighterWidth(highlighterWidth);
     if (eraserRadius != null) setEraserRadius(eraserRadius);
     if (_modeListenable.value) return;
     _undoStack.clear();
@@ -245,12 +300,17 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Begin a new in-flight stroke anchored to [pageIndex] starting at
   /// [firstPoint] (PDF point space, top-left origin). Notifies listeners so
   /// the layer can paint the new stroke as it grows.
+  ///
+  /// [kind] selects the visual variant ([PdfInkAnnotationKind.pen] /
+  /// [PdfInkAnnotationKind.highlighter]) and is propagated unchanged
+  /// onto the produced [PdfInkAnnotation] when the stroke is committed.
   void startStroke({
     required int pageIndex,
     required Offset firstPoint,
     required double lineWidth,
     required Color strokeColor,
     required double opacity,
+    PdfInkAnnotationKind kind = PdfInkAnnotationKind.pen,
   }) {
     final now = DateTime.now().toUtc();
     _inFlight = _InFlightStroke(
@@ -260,6 +320,7 @@ class PdfAnnotationController extends ChangeNotifier {
       strokeColor: strokeColor,
       opacity: opacity,
       createdAt: now,
+      kind: kind,
     );
     notifyListeners();
   }
@@ -298,6 +359,7 @@ class PdfAnnotationController extends ChangeNotifier {
         createdAt: inFlight.createdAt,
         updatedAt: now,
         creatorName: _currentCreator,
+        kind: inFlight.kind,
       ),
     );
     notifyListeners();
@@ -469,6 +531,7 @@ class PdfAnnotationController extends ChangeNotifier {
               createdAt: s.createdAt,
               updatedAt: now,
               creatorName: s.creatorName,
+              kind: s.kind,
             ),
           );
         }
@@ -509,6 +572,7 @@ class PdfAnnotationController extends ChangeNotifier {
         createdAt: inFlight.createdAt,
         updatedAt: inFlight.createdAt,
         creatorName: _currentCreator,
+        kind: inFlight.kind,
       ),
     ];
   }
@@ -521,6 +585,8 @@ class PdfAnnotationController extends ChangeNotifier {
     _toolListenable.dispose();
     _strokeColor.dispose();
     _strokeWidth.dispose();
+    _highlighterColor.dispose();
+    _highlighterWidth.dispose();
     _eraserRadius.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
@@ -571,6 +637,7 @@ class _InFlightStroke {
     required this.strokeColor,
     required this.opacity,
     required this.createdAt,
+    required this.kind,
   });
 
   final int pageIndex;
@@ -579,4 +646,5 @@ class _InFlightStroke {
   final Color strokeColor;
   final double opacity;
   final DateTime createdAt;
+  final PdfInkAnnotationKind kind;
 }

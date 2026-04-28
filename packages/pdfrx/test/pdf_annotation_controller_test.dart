@@ -10,6 +10,7 @@ PdfInkAnnotation _stroke({
   int pageIndex = 0,
   List<Offset> points = const [Offset(0, 0), Offset(10, 10)],
   String? creatorName,
+  PdfInkAnnotationKind kind = PdfInkAnnotationKind.pen,
 }) => PdfInkAnnotation(
   pageIndex: pageIndex,
   pointsInPdfSpace: points,
@@ -19,6 +20,7 @@ PdfInkAnnotation _stroke({
   createdAt: DateTime.utc(2024, 1, 1),
   updatedAt: DateTime.utc(2024, 1, 1),
   creatorName: creatorName,
+  kind: kind,
 );
 
 void main() {
@@ -259,6 +261,8 @@ void main() {
       expect(controller.strokeColor, const Color(0xFFFF3B30));
       expect(controller.strokeWidth, 2.0);
       expect(controller.eraserRadius, 10.0);
+      expect(controller.highlighterColor, const Color(0xFFFFFF00));
+      expect(controller.highlighterWidth, 12.0);
     });
 
     test('setStrokeColor / setStrokeWidth / setEraserRadius update listenables; re-set is no-op', () {
@@ -340,6 +344,103 @@ void main() {
 
       expect(controller.strokeColor, const Color(0xFFAF52DE));
       expect(controller.strokeWidth, 8.0);
+    });
+  });
+
+  group('PdfAnnotationController highlighter style state', () {
+    test('setHighlighterColor / setHighlighterWidth update listenables; re-set is no-op', () {
+      final controller = PdfAnnotationController();
+
+      var colorBumps = 0;
+      var widthBumps = 0;
+      controller.highlighterColorListenable.addListener(() => colorBumps++);
+      controller.highlighterWidthListenable.addListener(() => widthBumps++);
+
+      controller.setHighlighterColor(const Color(0xFF00FF00));
+      controller.setHighlighterColor(const Color(0xFF00FF00));
+      controller.setHighlighterWidth(16.0);
+      controller.setHighlighterWidth(16.0);
+
+      expect(colorBumps, 1);
+      expect(widthBumps, 1);
+      expect(controller.highlighterColor, const Color(0xFF00FF00));
+      expect(controller.highlighterWidth, 16.0);
+    });
+
+    test('enterMode applies highlighter overrides regardless of active tool; null preserves prior values', () async {
+      final controller = PdfAnnotationController();
+
+      // Active tool is still pen, but highlighter overrides apply anyway.
+      controller.enterMode(highlighterColor: const Color(0xFFFF69B4), highlighterWidth: 24.0);
+      expect(controller.currentToolListenable.value, PdfAnnotationTool.pen);
+      expect(controller.highlighterColor, const Color(0xFFFF69B4));
+      expect(controller.highlighterWidth, 24.0);
+
+      // Null overrides leave the prior values intact.
+      await controller.exitMode(onAnnotationsChanged: null);
+      controller.enterMode();
+      expect(controller.highlighterColor, const Color(0xFFFF69B4));
+      expect(controller.highlighterWidth, 24.0);
+    });
+
+    test(
+      'a highlighter pan commits a stroke with kind == highlighter and the controller\'s highlighter color/width',
+      () {
+        final controller = PdfAnnotationController();
+        controller.setHighlighterColor(const Color(0xFFFFA500));
+        controller.setHighlighterWidth(16.0);
+        controller.enterMode(tool: PdfAnnotationTool.highlighter);
+
+        controller.startStroke(
+          pageIndex: 0,
+          firstPoint: const Offset(1, 1),
+          lineWidth: controller.highlighterWidth,
+          strokeColor: controller.highlighterColor,
+          opacity: 0.35,
+          kind: PdfInkAnnotationKind.highlighter,
+        );
+        controller.appendPoint(const Offset(50, 1));
+        controller.commitStroke();
+
+        expect(controller.strokes, hasLength(1));
+        final stroke = controller.strokes.single;
+        expect(stroke.kind, PdfInkAnnotationKind.highlighter);
+        expect(stroke.strokeColor, const Color(0xFFFFA500));
+        expect(stroke.lineWidth, 16.0);
+        expect(stroke.opacity, 0.35);
+      },
+    );
+
+    test('inFlightStrokesFor propagates the in-flight kind to the transient stroke', () {
+      final controller = PdfAnnotationController();
+      controller.startStroke(
+        pageIndex: 0,
+        firstPoint: const Offset(0, 0),
+        lineWidth: 12.0,
+        strokeColor: const Color(0xFFFFFF00),
+        opacity: 0.35,
+        kind: PdfInkAnnotationKind.highlighter,
+      );
+      controller.appendPoint(const Offset(10, 10));
+
+      final inFlight = controller.inFlightStrokesFor(0).single;
+      expect(inFlight.kind, PdfInkAnnotationKind.highlighter);
+    });
+
+    test('startStroke without explicit kind defaults to PdfInkAnnotationKind.pen', () {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      controller.startStroke(
+        pageIndex: 0,
+        firstPoint: const Offset(0, 0),
+        lineWidth: 2.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+      );
+      controller.appendPoint(const Offset(10, 10));
+      controller.commitStroke();
+
+      expect(controller.strokes.single.kind, PdfInkAnnotationKind.pen);
     });
   });
 
@@ -497,6 +598,37 @@ void main() {
 
       expect(controller.strokes.where((s) => s.pageIndex == 1), hasLength(1));
       expect(controller.strokes.where((s) => s.pageIndex == 0), isEmpty);
+    });
+
+    test('eraser split preserves kind across emitted sub-strokes (mixed pen + highlighter)', () {
+      final controller = PdfAnnotationController();
+      controller.setAll([
+        _stroke(
+          pageIndex: 0,
+          points: const [Offset(0, 0), Offset(5, 0), Offset(10, 0), Offset(15, 0), Offset(20, 0)],
+          kind: PdfInkAnnotationKind.highlighter,
+        ),
+        _stroke(
+          pageIndex: 0,
+          points: const [Offset(0, 50), Offset(5, 50), Offset(10, 50), Offset(15, 50), Offset(20, 50)],
+        ),
+      ]);
+      controller.enterMode();
+
+      // Tight tap that bisects each stroke at x=12.5 / y={0,50}.
+      controller.startErase(pageIndex: 0, pdfPoint: const Offset(12.5, 0), radiusInPdfPoints: 1.0);
+      controller.endErase();
+      controller.startErase(pageIndex: 0, pdfPoint: const Offset(12.5, 50), radiusInPdfPoints: 1.0);
+      controller.endErase();
+
+      // Two parents → four sub-strokes total. The kind of each sub-stroke
+      // must match its parent's kind.
+      final highlighterPieces = controller.strokes.where((s) => s.pointsInPdfSpace.first.dy == 0).toList();
+      final penPieces = controller.strokes.where((s) => s.pointsInPdfSpace.first.dy == 50).toList();
+      expect(highlighterPieces, hasLength(2));
+      expect(penPieces, hasLength(2));
+      expect(highlighterPieces.every((s) => s.kind == PdfInkAnnotationKind.highlighter), isTrue);
+      expect(penPieces.every((s) => s.kind == PdfInkAnnotationKind.pen), isTrue);
     });
   });
 
