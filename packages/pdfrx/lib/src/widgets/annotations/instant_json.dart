@@ -39,6 +39,21 @@ Map<String, dynamic> _encodeInkEntry(PdfInkAnnotation a) {
     'isDrawnNaturally': false,
     'strokeColor': colorToHex(a.strokeColor),
     if (a.creatorName != null) 'creatorName': a.creatorName,
+    if (a.kind != PdfInkAnnotationKind.pen) 'pdfrx:kind': _kindToString(a.kind),
+  };
+}
+
+String _kindToString(PdfInkAnnotationKind kind) => switch (kind) {
+  PdfInkAnnotationKind.pen => 'pen',
+  PdfInkAnnotationKind.highlighter => 'highlighter',
+};
+
+PdfInkAnnotationKind? _kindFromString(dynamic value) {
+  if (value is! String) return null;
+  return switch (value) {
+    'pen' => PdfInkAnnotationKind.pen,
+    'highlighter' => PdfInkAnnotationKind.highlighter,
+    _ => null,
   };
 }
 
@@ -148,6 +163,14 @@ PdfInkAnnotation? _decodeInkEntry(
   final rawCreatorName = entry['creatorName'];
   final creatorName = rawCreatorName is String ? rawCreatorName : null;
 
+  // Resolve kind: explicit `pdfrx:kind` field wins; missing/malformed/unknown
+  // values silently fall back to opacity-based inference. This keeps legacy
+  // documents (no `pdfrx:kind`, opacity == 1.0) round-tripping as pen, while
+  // tolerating forward-compatible future kinds without dropping the entry.
+  final kind =
+      _kindFromString(entry['pdfrx:kind']) ??
+      (opacity < 1.0 ? PdfInkAnnotationKind.highlighter : PdfInkAnnotationKind.pen);
+
   return PdfInkAnnotation(
     pageIndex: pageIndex,
     pointsInPdfSpace: points,
@@ -157,6 +180,7 @@ PdfInkAnnotation? _decodeInkEntry(
     createdAt: createdAt,
     updatedAt: updatedAt,
     creatorName: creatorName,
+    kind: kind,
   );
 }
 

@@ -47,15 +47,15 @@ Add `PdfAnnotationTool.highlighter` (translucent, butt-capped, thicker) end-to-e
 ### Phase 2: JSON round-trip
 
 - **Goal**: highlighter strokes survive `encode → decode`; legacy data still decodes correctly.
-- [ ] `packages/pdfrx/lib/src/widgets/annotations/instant_json.dart` — `_encodeInkEntry`: emit `'pdfrx:kind': 'highlighter'` only when `a.kind != PdfInkAnnotationKind.pen` (omit for pen → backwards-compatible).
-- [ ] `instant_json.dart` — `_decodeInkEntry`: parse `pdfrx:kind` first (string `"pen"` / `"highlighter"`); on missing, malformed, or unknown value fall back to `opacity < 1.0 ? highlighter : pen`; pass `kind` into the `PdfInkAnnotation` constructor.
-- [ ] TDD: encoder omits `pdfrx:kind` for pen entries; emits `'highlighter'` for highlighter entries.
-- [ ] TDD: decoder round-trips kind from explicit `pdfrx:kind` field.
-- [ ] TDD: decoder infers `highlighter` from `opacity < 1.0` when `pdfrx:kind` is missing.
-- [ ] TDD: decoder tolerates `pdfrx:kind` with wrong type (e.g. `42`) and unknown string (e.g. `"marker"`) — falls back to opacity inference, never drops the entry.
-- [ ] TDD: legacy fixture (no `pdfrx:kind`, `opacity == 1.0`) still decodes as `pen` — existing fixture-based tests must not regress.
-- [ ] TDD: round-trip property — `decodeInstantJson(encodeInstantJson(strokes), …)` preserves `kind` on every entry (mixed list).
-- [ ] Verify: `cd packages/pdfrx && flutter analyze && flutter test`
+- [x] `packages/pdfrx/lib/src/widgets/annotations/instant_json.dart` — `_encodeInkEntry`: emit `'pdfrx:kind': 'highlighter'` only when `a.kind != PdfInkAnnotationKind.pen` (omit for pen → backwards-compatible).
+- [x] `instant_json.dart` — `_decodeInkEntry`: parse `pdfrx:kind` first (string `"pen"` / `"highlighter"`); on missing, malformed, or unknown value fall back to `opacity < 1.0 ? highlighter : pen`; pass `kind` into the `PdfInkAnnotation` constructor.
+- [x] TDD: encoder omits `pdfrx:kind` for pen entries; emits `'highlighter'` for highlighter entries.
+- [x] TDD: decoder round-trips kind from explicit `pdfrx:kind` field.
+- [x] TDD: decoder infers `highlighter` from `opacity < 1.0` when `pdfrx:kind` is missing.
+- [x] TDD: decoder tolerates `pdfrx:kind` with wrong type (e.g. `42`) and unknown string (e.g. `"marker"`) — falls back to opacity inference, never drops the entry.
+- [x] TDD: legacy fixture (no `pdfrx:kind`, `opacity == 1.0`) still decodes as `pen` — existing fixture-based tests must not regress.
+- [x] TDD: round-trip property — `decodeInstantJson(encodeInstantJson(strokes), …)` preserves `kind` on every entry (mixed list).
+- [x] Verify: `cd packages/pdfrx && flutter analyze && flutter test`
 
 ### Phase 3: Public API on `PdfViewerController`
 
