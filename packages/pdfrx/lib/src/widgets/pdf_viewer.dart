@@ -5368,12 +5368,19 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// removes any stroke, and the callback receives every stroke.
   ///
   /// The remaining parameters ([tool], [strokeColor], [strokeWidth],
-  /// [eraserRadius]) are optional overrides for the controller's runtime
-  /// stroke-style state. Non-null values are applied; null leaves the
-  /// previously-set value in place. The controller remembers tool /
-  /// color / thickness / eraser radius across `enterAnnotationMode`
-  /// → `exitAnnotationMode` cycles, so a user picking red 3pt in one
+  /// [highlighterColor], [highlighterWidth], [eraserRadius]) are
+  /// optional overrides for the controller's runtime stroke-style
+  /// state. Non-null values are applied; null leaves the previously-set
+  /// value in place. The controller remembers tool / pen color /
+  /// pen thickness / highlighter color / highlighter thickness /
+  /// eraser radius across `enterAnnotationMode` →
+  /// `exitAnnotationMode` cycles, so a user picking red 3pt in one
   /// session sees red 3pt selected when they re-enter mode later.
+  ///
+  /// Per-tool overrides apply regardless of the active tool — passing
+  /// [highlighterColor] while [tool] is `pen` updates the highlighter's
+  /// remembered color but the visible UI only changes when the user
+  /// (or this same call via [tool]) selects the highlighter.
   ///
   /// Idempotent — calling while already in annotation mode applies the
   /// overrides but does not re-fire mode listeners.
@@ -5382,6 +5389,8 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     PdfAnnotationTool? tool,
     Color? strokeColor,
     double? strokeWidth,
+    Color? highlighterColor,
+    double? highlighterWidth,
     double? eraserRadius,
   }) async {
     _annotationController.enterMode(
@@ -5389,6 +5398,8 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       tool: tool,
       strokeColor: strokeColor,
       strokeWidth: strokeWidth,
+      highlighterColor: highlighterColor,
+      highlighterWidth: highlighterWidth,
       eraserRadius: eraserRadius,
     );
   }
@@ -5414,6 +5425,28 @@ class PdfViewerController extends ValueListenable<Matrix4> {
 
   /// Listenable carrying the active stroke width.
   ValueListenable<double> get annotationStrokeWidthListenable => _annotationController.strokeWidthListenable;
+
+  /// Current highlighter stroke color. See
+  /// [annotationHighlighterColorListenable] for change notifications.
+  Color get annotationHighlighterColor => _annotationController.highlighterColor;
+
+  /// Replace the active highlighter stroke color used for new
+  /// [PdfAnnotationTool.highlighter] strokes.
+  void setAnnotationHighlighterColor(Color value) => _annotationController.setHighlighterColor(value);
+
+  /// Listenable carrying the active highlighter stroke color.
+  ValueListenable<Color> get annotationHighlighterColorListenable => _annotationController.highlighterColorListenable;
+
+  /// Current highlighter stroke width (PDF points). See
+  /// [annotationHighlighterWidthListenable] for change notifications.
+  double get annotationHighlighterWidth => _annotationController.highlighterWidth;
+
+  /// Replace the active highlighter stroke width (PDF points) used for
+  /// new [PdfAnnotationTool.highlighter] strokes.
+  void setAnnotationHighlighterWidth(double value) => _annotationController.setHighlighterWidth(value);
+
+  /// Listenable carrying the active highlighter stroke width.
+  ValueListenable<double> get annotationHighlighterWidthListenable => _annotationController.highlighterWidthListenable;
 
   /// Replace the active eraser hit radius (PDF points). The on-screen
   /// eraser cursor preview resizes immediately to match.

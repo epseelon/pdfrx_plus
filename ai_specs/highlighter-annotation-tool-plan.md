@@ -60,13 +60,13 @@ Add `PdfAnnotationTool.highlighter` (translucent, butt-capped, thicker) end-to-e
 ### Phase 3: Public API on `PdfViewerController`
 
 - **Goal**: integrators can drive the highlighter via `PdfViewerController` only.
-- [ ] `packages/pdfrx/lib/src/widgets/pdf_viewer.dart:~5400` — add `annotationHighlighterColor` getter, `setAnnotationHighlighterColor(Color)`, `annotationHighlighterColorListenable`; mirror style of `annotationStrokeColor*`.
-- [ ] `pdf_viewer.dart` — add `annotationHighlighterWidth` getter, `setAnnotationHighlighterWidth(double)`, `annotationHighlighterWidthListenable`.
-- [ ] `pdf_viewer.dart:5379` — extend `enterAnnotationMode` with `Color? highlighterColor`, `double? highlighterWidth`; forward to `_annotationController.enterMode`; dartdoc the per-tool override behavior.
-- [ ] `packages/pdfrx/lib/pdfrx.dart` — verify `PdfInkAnnotationKind` is re-exported via the existing whole-file export of `pdf_ink_annotation.dart` (no change expected; assert with import-only smoke test or `dart pub publish --dry-run`).
-- [ ] TDD: `PdfViewerController` highlighter color/width getters reflect setter values; listenables fire only on change.
-- [ ] TDD: `enterAnnotationMode(highlighterColor: X, highlighterWidth: Y)` writes through to controller listenables even when active tool is pen.
-- [ ] Verify: `cd packages/pdfrx && flutter analyze && flutter test`
+- [x] `packages/pdfrx/lib/src/widgets/pdf_viewer.dart:~5400` — add `annotationHighlighterColor` getter, `setAnnotationHighlighterColor(Color)`, `annotationHighlighterColorListenable`; mirror style of `annotationStrokeColor*`.
+- [x] `pdf_viewer.dart` — add `annotationHighlighterWidth` getter, `setAnnotationHighlighterWidth(double)`, `annotationHighlighterWidthListenable`.
+- [x] `pdf_viewer.dart:5379` — extend `enterAnnotationMode` with `Color? highlighterColor`, `double? highlighterWidth`; forward to `_annotationController.enterMode`; dartdoc the per-tool override behavior.
+- [x] `packages/pdfrx/lib/pdfrx.dart` — verify `PdfInkAnnotationKind` is re-exported via the existing whole-file export of `pdf_ink_annotation.dart` (no change expected; assert with import-only smoke test or `dart pub publish --dry-run`).
+- [x] TDD: `PdfViewerController` highlighter color/width getters reflect setter values; listenables fire only on change.
+- [x] TDD: `enterAnnotationMode(highlighterColor: X, highlighterWidth: Y)` writes through to controller listenables even when active tool is pen.
+- [x] Verify: `cd packages/pdfrx && flutter analyze && flutter test`
 
 ### Phase 4: `music_viewer` toolbar + journey test
 
