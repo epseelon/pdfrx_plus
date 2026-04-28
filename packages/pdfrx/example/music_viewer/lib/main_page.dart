@@ -3,6 +3,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
 import 'annotation_storage.dart';
+import 'draggable_panel.dart';
 import 'horizontal_facing_pages_layout.dart';
 
 class MainPage extends StatefulWidget {
@@ -66,6 +67,51 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   void _togglePageMode() {
     setState(() => _twoPageMode = !_twoPageMode);
     WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
+  }
+
+  Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle) {
+    return Material(
+      elevation: 8,
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          dragHandle(
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Tooltip(
+                message: 'Drag to move',
+                child: Icon(Icons.drag_indicator),
+              ),
+            ),
+          ),
+          ValueListenableBuilder<PdfAnnotationTool>(
+            valueListenable: controller.annotationToolListenable,
+            builder: (context, tool, _) {
+              final eraserOn = tool == PdfAnnotationTool.eraser;
+              return IconButton(
+                tooltip: eraserOn ? 'Pen' : 'Eraser',
+                icon: Icon(eraserOn ? Icons.edit : Icons.cleaning_services),
+                onPressed: () => controller.setAnnotationTool(
+                  eraserOn ? PdfAnnotationTool.pen : PdfAnnotationTool.eraser,
+                ),
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Reset annotations',
+            icon: const Icon(Icons.delete_forever),
+            onPressed: _confirmResetAnnotations,
+          ),
+          IconButton(
+            tooltip: 'Close',
+            icon: const Icon(Icons.close),
+            onPressed: () => controller.exitAnnotationMode(),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _confirmResetAnnotations() async {
@@ -316,47 +362,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             valueListenable: controller.annotationModeListenable,
             builder: (context, annotating, _) {
               if (!annotating) return const SizedBox.shrink();
-              return Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Material(
-                  elevation: 8,
-                  color: Theme.of(context).colorScheme.surface,
-                  child: SafeArea(
-                    top: false,
-                    child: SizedBox(
-                      height: 56,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          ValueListenableBuilder<PdfAnnotationTool>(
-                            valueListenable: controller.annotationToolListenable,
-                            builder: (context, tool, _) {
-                              final eraserOn = tool == PdfAnnotationTool.eraser;
-                              return IconButton(
-                                tooltip: eraserOn ? 'Pen' : 'Eraser',
-                                icon: Icon(eraserOn ? Icons.edit : Icons.cleaning_services),
-                                onPressed: () => controller.setAnnotationTool(
-                                  eraserOn ? PdfAnnotationTool.pen : PdfAnnotationTool.eraser,
-                                ),
-                              );
-                            },
-                          ),
-                          IconButton(
-                            tooltip: 'Reset annotations',
-                            icon: const Icon(Icons.delete_forever),
-                            onPressed: _confirmResetAnnotations,
-                          ),
-                          IconButton(
-                            tooltip: 'Close',
-                            icon: const Icon(Icons.close),
-                            onPressed: () => controller.exitAnnotationMode(),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+              return Positioned.fill(
+                child: DraggablePanel(
+                  size: const Size(224, 56),
+                  builder: (context, dragHandle) => _buildAnnotationToolbar(dragHandle),
                 ),
               );
             },
