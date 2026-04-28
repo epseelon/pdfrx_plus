@@ -30,6 +30,10 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<Color> _strokeColor = ValueNotifier<Color>(const Color(0xFFFF3B30));
   final ValueNotifier<double> _strokeWidth = ValueNotifier<double>(2.0);
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
+  final List<List<PdfInkAnnotation>> _undoStack = [];
+  final List<List<PdfInkAnnotation>> _redoStack = [];
+  final ValueNotifier<bool> _canUndo = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _canRedo = ValueNotifier<bool>(false);
 
   String? _currentCreator;
   _InFlightStroke? _inFlight;
@@ -95,6 +99,14 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Current eraser radius value. See [eraserRadiusListenable] for change
   /// notifications.
   double get eraserRadius => _eraserRadius.value;
+
+  /// `true` while the undo stack has at least one snapshot. Wire to
+  /// disabled-state UI; calling [undo] when this is `false` is a no-op.
+  ValueListenable<bool> get canUndoListenable => _canUndo;
+
+  /// `true` while the redo stack has at least one snapshot. Wire to
+  /// disabled-state UI; calling [redo] when this is `false` is a no-op.
+  ValueListenable<bool> get canRedoListenable => _canRedo;
 
   /// `creatorName` declared by the active annotation session, or `null`
   /// when the caller did not pass one to [enterMode]. New strokes
@@ -265,6 +277,7 @@ class PdfAnnotationController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    _pushUndoSnapshot();
     final now = DateTime.now().toUtc();
     _strokes.add(
       PdfInkAnnotation(
@@ -286,6 +299,40 @@ class PdfAnnotationController extends ChangeNotifier {
   void cancelStroke() {
     if (_inFlight == null) return;
     _inFlight = null;
+    notifyListeners();
+  }
+
+  /// Pop the most recent undo snapshot and restore it as the current
+  /// stroke list. The displaced state is pushed onto the redo stack so
+  /// it can be restored by [redo].
+  ///
+  /// No-op when [canUndoListenable] is `false` — does not throw, does
+  /// not notify listeners.
+  void undo() {
+    if (_undoStack.isEmpty) return;
+    _redoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    final snapshot = _undoStack.removeLast();
+    _strokes
+      ..clear()
+      ..addAll(snapshot);
+    _refreshHistoryListenables();
+    notifyListeners();
+  }
+
+  /// Pop the most recent redo snapshot and restore it as the current
+  /// stroke list. The displaced state is pushed onto the undo stack so
+  /// it can be restored by [undo].
+  ///
+  /// No-op when [canRedoListenable] is `false` — does not throw, does
+  /// not notify listeners.
+  void redo() {
+    if (_redoStack.isEmpty) return;
+    _undoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    final snapshot = _redoStack.removeLast();
+    _strokes
+      ..clear()
+      ..addAll(snapshot);
+    _refreshHistoryListenables();
     notifyListeners();
   }
 
@@ -420,6 +467,19 @@ class PdfAnnotationController extends ChangeNotifier {
 
   bool _ownsStroke(PdfInkAnnotation s) => s.creatorName == _currentCreator;
 
+  void _pushUndoSnapshot() {
+    _undoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    _redoStack.clear();
+    _refreshHistoryListenables();
+  }
+
+  void _refreshHistoryListenables() {
+    final canUndo = _undoStack.isNotEmpty;
+    if (_canUndo.value != canUndo) _canUndo.value = canUndo;
+    final canRedo = _redoStack.isNotEmpty;
+    if (_canRedo.value != canRedo) _canRedo.value = canRedo;
+  }
+
   /// In-flight strokes (only the start page's; max one) for layer
   /// rendering during the live drag.
   Iterable<PdfInkAnnotation> inFlightStrokesFor(int pageIndex) {
@@ -449,6 +509,8 @@ class PdfAnnotationController extends ChangeNotifier {
     _strokeColor.dispose();
     _strokeWidth.dispose();
     _eraserRadius.dispose();
+    _canUndo.dispose();
+    _canRedo.dispose();
     super.dispose();
   }
 }

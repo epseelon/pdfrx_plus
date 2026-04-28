@@ -5463,6 +5463,28 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// action; persistence is the caller's call).
   void clearAnnotations() => _annotationController.clear();
 
+  /// Listenable that is `true` while at least one undoable mutation is
+  /// available. Wire to the disabled state of an Undo button.
+  ///
+  /// The undo/redo stacks are session-scoped and reset on every
+  /// false→true transition of [enterAnnotationMode] (i.e. when the user
+  /// re-enters annotation mode). Mid-session calls to
+  /// [enterAnnotationMode] that only update style or creator overrides
+  /// preserve the existing history.
+  ValueListenable<bool> get canUndoListenable => _annotationController.canUndoListenable;
+
+  /// Listenable that is `true` while at least one redoable mutation is
+  /// available. Wire to the disabled state of a Redo button.
+  ValueListenable<bool> get canRedoListenable => _annotationController.canRedoListenable;
+
+  /// Undo the most recent stroke mutation (commit, append, or eraser
+  /// pan). No-op when [canUndoListenable] is `false`.
+  void undo() => _annotationController.undo();
+
+  /// Redo the most recently undone stroke mutation. No-op when
+  /// [canRedoListenable] is `false`.
+  void redo() => _annotationController.redo();
+
   /// The text selection delegate.
   PdfTextSelectionDelegate get textSelectionDelegate => _state;
 

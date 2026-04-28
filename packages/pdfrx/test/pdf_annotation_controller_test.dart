@@ -500,6 +500,120 @@ void main() {
     });
   });
 
+  group('PdfAnnotationController undo/redo', () {
+    void drawStrokeOf(PdfAnnotationController c, {required Offset start, required Offset end, int pageIndex = 0}) {
+      c.startStroke(
+        pageIndex: pageIndex,
+        firstPoint: start,
+        lineWidth: 1.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+      );
+      c.appendPoint(end);
+      c.commitStroke();
+    }
+
+    test('a fresh controller has both history listenables false', () {
+      final controller = PdfAnnotationController();
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('commitStroke with at least two points enables undo and leaves redo disabled', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+
+      expect(controller.canUndoListenable.value, isTrue);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('commitStroke with fewer than two points does not push a snapshot', () {
+      final controller = PdfAnnotationController();
+      controller.startStroke(
+        pageIndex: 0,
+        firstPoint: const Offset(0, 0),
+        lineWidth: 1.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+      );
+      controller.commitStroke();
+
+      expect(controller.strokes, isEmpty);
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('undo from a one-stroke state empties strokes and flips listenables', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+
+      controller.undo();
+
+      expect(controller.strokes, isEmpty);
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isTrue);
+    });
+
+    test('redo restores the undone stroke and flips listenables back', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      final originalStroke = controller.strokes.single;
+      controller.undo();
+
+      controller.redo();
+
+      expect(controller.strokes, hasLength(1));
+      expect(controller.strokes.single, same(originalStroke));
+      expect(controller.canUndoListenable.value, isTrue);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('undo and redo on an empty stack are silent no-ops', () {
+      final controller = PdfAnnotationController();
+      var listenerCalls = 0;
+      controller.addListener(() => listenerCalls++);
+      var undoBumps = 0;
+      var redoBumps = 0;
+      controller.canUndoListenable.addListener(() => undoBumps++);
+      controller.canRedoListenable.addListener(() => redoBumps++);
+
+      controller.undo();
+      controller.redo();
+
+      expect(listenerCalls, 0);
+      expect(undoBumps, 0);
+      expect(redoBumps, 0);
+    });
+
+    test('canUndoListenable fires once on first push, not on subsequent pushes', () {
+      final controller = PdfAnnotationController();
+      var undoBumps = 0;
+      controller.canUndoListenable.addListener(() => undoBumps++);
+
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      expect(undoBumps, 1);
+      drawStrokeOf(controller, start: const Offset(10, 10), end: const Offset(15, 15));
+      expect(undoBumps, 1);
+      drawStrokeOf(controller, start: const Offset(20, 20), end: const Offset(25, 25));
+      expect(undoBumps, 1);
+    });
+
+    test('a new commit after undo invalidates the redo stack', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      final strokeA = controller.strokes.single;
+      drawStrokeOf(controller, start: const Offset(10, 10), end: const Offset(15, 15));
+      controller.undo();
+      expect(controller.canRedoListenable.value, isTrue);
+
+      drawStrokeOf(controller, start: const Offset(20, 20), end: const Offset(25, 25));
+
+      expect(controller.strokes, hasLength(2));
+      expect(controller.strokes[0], same(strokeA));
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+  });
+
   group('PdfAnnotationController.exitMode export filter', () {
     test('with a creatorName, the callback receives only that user\'s strokes', () async {
       final controller = PdfAnnotationController();

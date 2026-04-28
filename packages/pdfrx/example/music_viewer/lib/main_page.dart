@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
@@ -13,6 +14,49 @@ class MainPage extends StatefulWidget {
 
   @override
   State<MainPage> createState() => _MainPageState();
+}
+
+/// Undo/Redo button pair in the annotation toolbar. Stable selectors are
+/// the tooltip strings `'Undo'` and `'Redo'` — keep these in sync with
+/// the toolbar widget test.
+class AnnotationUndoRedoButtons extends StatelessWidget {
+  const AnnotationUndoRedoButtons({
+    required this.canUndoListenable,
+    required this.canRedoListenable,
+    required this.onUndo,
+    required this.onRedo,
+    super.key,
+  });
+
+  final ValueListenable<bool> canUndoListenable;
+  final ValueListenable<bool> canRedoListenable;
+  final VoidCallback onUndo;
+  final VoidCallback onRedo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ValueListenableBuilder<bool>(
+          valueListenable: canUndoListenable,
+          builder: (context, canUndo, _) => IconButton(
+            tooltip: 'Undo',
+            icon: const Icon(Icons.undo),
+            onPressed: canUndo ? onUndo : null,
+          ),
+        ),
+        ValueListenableBuilder<bool>(
+          valueListenable: canRedoListenable,
+          builder: (context, canRedo, _) => IconButton(
+            tooltip: 'Redo',
+            icon: const Icon(Icons.redo),
+            onPressed: canRedo ? onRedo : null,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _MainPageState extends State<MainPage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
@@ -127,6 +171,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             if (isPen) _buildColorButton(),
             _buildThicknessButton(isPen),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            AnnotationUndoRedoButtons(
+              canUndoListenable: controller.canUndoListenable,
+              canRedoListenable: controller.canRedoListenable,
+              onUndo: controller.undo,
+              onRedo: controller.redo,
+            ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             IconButton(
               tooltip: 'Reset annotations',
