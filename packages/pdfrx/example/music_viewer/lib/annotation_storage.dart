@@ -58,6 +58,7 @@ Future<void> writeAnnotations(
       overrideTempDir: overrideTempDir,
     );
     await file.writeAsString(json);
+    debugPrint('writeAnnotations succeeded in ${file.absolute}');
   } catch (e, st) {
     debugPrint('writeAnnotations failed for $absolutePdfPath: $e\n$st');
   }
