@@ -40,16 +40,16 @@ Snapshot-based undo/redo in `PdfAnnotationController` (in-memory, per-session); 
 ### Phase 2: Eraser + lifecycle coverage + edge cases + manual verify
 
 - **Goal**: complete spec coverage; eraser, multi-mutation lifecycle, manual walkthrough.
-- [ ] TDD: `startErase` pushes one snapshot; `continueErase` pushes none. Draw + 1 erase pan with N continue samples → undo stack depth = 2 (one for commit, one for startErase)
-- [ ] TDD: eraser pan splits stroke into pieces; `undo()` restores original (`pointsInPdfSpace`, `lineWidth`, `strokeColor` equal)
-- [ ] TDD: eraser pan touching no strokes still pushes snapshot at `startErase` (accepted no-op trade-off per spec edge case 19)
-- [ ] TDD: first `enterMode` (false→true) clears both stacks; second `enterMode` while already in mode preserves stacks (populate stacks, call again, assert depths unchanged)
-- [ ] TDD: `clear()` empties strokes AND stacks (both listenables go false); calling `clear()` when already empty is still a no-op (no notify)
-- [ ] TDD: `setAll(...)` clears both stacks
-- [ ] TDD: `addStroke(stroke)` pushes a snapshot before appending (treat as user-driven append)
-- [ ] TDD: `importJson(...)` clears stacks transitively (delegates to `setAll`); cover with one test
-- [ ] Manual verify (spec validation steps 15-23): run `cd packages/pdfrx/example/music_viewer && flutter run`; walk the golden path — toolbar layout, dividers, disabled states, draw/undo/redo, eraser undo, reset clears stacks, exit/re-enter clears stacks while keeping prior strokes on canvas
-- [ ] Verify: `cd packages/pdfrx && flutter analyze && flutter test`
+- [x] TDD: `startErase` pushes one snapshot; `continueErase` pushes none. Draw + 1 erase pan with N continue samples → undo stack depth = 2 (one for commit, one for startErase)
+- [x] TDD: eraser pan splits stroke into pieces; `undo()` restores original (`pointsInPdfSpace`, `lineWidth`, `strokeColor` equal)
+- [x] TDD: eraser pan touching no strokes still pushes snapshot at `startErase` (accepted no-op trade-off per spec edge case 19)
+- [x] TDD: first `enterMode` (false→true) clears both stacks; second `enterMode` while already in mode preserves stacks (populate stacks, call again, assert depths unchanged)
+- [x] TDD: `clear()` empties strokes AND stacks (both listenables go false); calling `clear()` when already empty is still a no-op (no notify)
+- [x] TDD: `setAll(...)` clears both stacks
+- [x] TDD: `addStroke(stroke)` pushes a snapshot before appending (treat as user-driven append)
+- [x] TDD: `importJson(...)` clears stacks transitively (delegates to `setAll`); cover with one test
+- [ ] Manual verify (spec validation steps 15-23): run `cd packages/pdfrx/example/music_viewer && flutter run`; walk the golden path — toolbar layout, dividers, disabled states, draw/undo/redo, eraser undo, reset clears stacks, exit/re-enter clears stacks while keeping prior strokes on canvas — **BLOCKER**: requires user to run the app on a device; cannot be performed by the agent. All automated coverage of this surface is in place via the controller-level TDD suite + the music_viewer toolbar widget tests.
+- [x] Verify: `cd packages/pdfrx && flutter analyze && flutter test` (analyze: same 9 pre-existing baseline issues, 0 new; pdfrx tests: 47 passing of 48 — the single failure is the pre-existing `pdf_viewer_test.dart` `PdfViewer.uri` test that needs to download pdfium binaries from GitHub, unrelated to this change. music_viewer: clean analyze; 9/9 tests pass.)
 
 ## Risks / Out of scope
 

@@ -612,6 +612,168 @@ void main() {
       expect(controller.strokes[0], same(strokeA));
       expect(controller.canRedoListenable.value, isFalse);
     });
+
+    test('undo after an eraser split restores the original stroke unchanged', () {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      controller.startStroke(
+        pageIndex: 0,
+        firstPoint: const Offset(0, 0),
+        lineWidth: 1.0,
+        strokeColor: const Color(0xFF000000),
+        opacity: 1.0,
+      );
+      controller.appendPoint(const Offset(5, 0));
+      controller.appendPoint(const Offset(10, 0));
+      controller.appendPoint(const Offset(15, 0));
+      controller.appendPoint(const Offset(20, 0));
+      controller.commitStroke();
+      final original = controller.strokes.single;
+
+      controller.startErase(pageIndex: 0, pdfPoint: const Offset(12.5, 0), radiusInPdfPoints: 0.1);
+      controller.endErase();
+      expect(controller.strokes, hasLength(2)); // split into two pieces
+
+      controller.undo();
+      expect(controller.strokes, hasLength(1));
+      expect(controller.strokes.single.pointsInPdfSpace, original.pointsInPdfSpace);
+      expect(controller.strokes.single.lineWidth, original.lineWidth);
+      expect(controller.strokes.single.strokeColor, original.strokeColor);
+    });
+
+    test('importJson clears history transitively (delegates to setAll)', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      expect(controller.canUndoListenable.value, isTrue);
+
+      controller.importJson('{"format":"https://pspdfkit.com/instant-json/v1","annotations":[]}', pageCount: 1);
+
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('addStroke pushes a snapshot before appending', () {
+      final controller = PdfAnnotationController();
+      controller.addStroke(_stroke(pageIndex: 0));
+      expect(controller.strokes, hasLength(1));
+      expect(controller.canUndoListenable.value, isTrue);
+
+      controller.undo();
+      expect(controller.strokes, isEmpty);
+      expect(controller.canRedoListenable.value, isTrue);
+    });
+
+    test('setAll(...) clears both history stacks', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      controller.undo();
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isTrue);
+
+      controller.setAll([
+        _stroke(pageIndex: 0, points: const [Offset(50, 50), Offset(60, 60)]),
+      ]);
+
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+    });
+
+    test('clear() empties strokes AND history; calling clear() when empty is still a no-op', () {
+      final controller = PdfAnnotationController();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      drawStrokeOf(controller, start: const Offset(10, 10), end: const Offset(15, 15));
+      controller.undo(); // populate redo stack
+      expect(controller.canUndoListenable.value, isTrue);
+      expect(controller.canRedoListenable.value, isTrue);
+
+      controller.clear();
+      expect(controller.strokes, isEmpty);
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+
+      // Re-clear when already empty must remain a true no-op (no
+      // listener notification, no notify on the main controller).
+      var listenerCalls = 0;
+      controller.addListener(() => listenerCalls++);
+      var undoBumps = 0;
+      controller.canUndoListenable.addListener(() => undoBumps++);
+
+      controller.clear();
+      expect(listenerCalls, 0);
+      expect(undoBumps, 0);
+    });
+
+    test('first enterMode (false→true) clears history; mid-session enterMode preserves it', () async {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 5));
+      drawStrokeOf(controller, start: const Offset(10, 10), end: const Offset(15, 15));
+      controller.undo();
+      expect(controller.canUndoListenable.value, isTrue);
+      expect(controller.canRedoListenable.value, isTrue);
+
+      // Mid-session re-entry with style overrides must preserve history.
+      controller.enterMode(strokeColor: const Color(0xFF112233));
+      expect(controller.canUndoListenable.value, isTrue);
+      expect(controller.canRedoListenable.value, isTrue);
+
+      // Exit and re-enter (false→true transition) clears history.
+      await controller.exitMode(onAnnotationsChanged: null);
+      controller.enterMode();
+      expect(controller.canUndoListenable.value, isFalse);
+      expect(controller.canRedoListenable.value, isFalse);
+      // Strokes from the previous session remain on canvas.
+      expect(controller.strokes, isNotEmpty);
+    });
+
+    test('eraser pan touching no strokes still pushes a snapshot at startErase', () {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(5, 0));
+
+      // Eraser far from any stroke. Per spec edge case 19, we still
+      // push a snapshot at pan start; the trade-off is a cosmetic no-op
+      // undo — popping a snapshot identical to current state.
+      controller.startErase(pageIndex: 0, pdfPoint: const Offset(500, 500), radiusInPdfPoints: 1.0);
+      controller.endErase();
+
+      // The eraser pushed a snapshot, so undo stack depth is 2 (one for
+      // the commit and one for the eraser pan). Two undos must drain
+      // it down to empty.
+      controller.undo();
+      expect(controller.strokes, hasLength(1));
+      controller.undo();
+      expect(controller.strokes, isEmpty);
+      expect(controller.canUndoListenable.value, isFalse);
+    });
+
+    test('startErase pushes one snapshot per pan; continueErase pushes none', () {
+      final controller = PdfAnnotationController();
+      controller.enterMode();
+      // Draw two strokes so we can prove that an eraser on the second
+      // one is undone independently of the first commit's snapshot.
+      drawStrokeOf(controller, start: const Offset(0, 0), end: const Offset(20, 0));
+      drawStrokeOf(controller, start: const Offset(0, 50), end: const Offset(20, 50));
+      // Undo stack depth = 2 (one per commit).
+
+      controller.startErase(pageIndex: 0, pdfPoint: const Offset(10, 50), radiusInPdfPoints: 1.0);
+      controller.continueErase(pageIndex: 0, pdfPoint: const Offset(11, 50), radiusInPdfPoints: 1.0);
+      controller.continueErase(pageIndex: 0, pdfPoint: const Offset(12, 50), radiusInPdfPoints: 1.0);
+      controller.endErase();
+
+      // Eraser deleted the second stroke. One undo must restore it
+      // (proving the pan pushed exactly one snapshot, not zero, not many).
+      expect(controller.strokes, hasLength(1));
+      controller.undo();
+      expect(controller.strokes, hasLength(2));
+      // The remaining undo stack must still contain the two commit
+      // snapshots (no extra snapshot was pushed during continueErase).
+      controller.undo();
+      expect(controller.strokes, hasLength(1));
+      controller.undo();
+      expect(controller.strokes, isEmpty);
+      expect(controller.canUndoListenable.value, isFalse);
+    });
   });
 
   group('PdfAnnotationController.exitMode export filter', () {

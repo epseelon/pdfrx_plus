@@ -159,6 +159,9 @@ class PdfAnnotationController extends ChangeNotifier {
     if (strokeWidth != null) setStrokeWidth(strokeWidth);
     if (eraserRadius != null) setEraserRadius(eraserRadius);
     if (_modeListenable.value) return;
+    _undoStack.clear();
+    _redoStack.clear();
+    _refreshHistoryListenables();
     _modeListenable.value = true;
   }
 
@@ -192,6 +195,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _strokes
       ..clear()
       ..addAll(next);
+    _undoStack.clear();
+    _redoStack.clear();
+    _refreshHistoryListenables();
     notifyListeners();
   }
 
@@ -199,6 +205,9 @@ class PdfAnnotationController extends ChangeNotifier {
   void clear() {
     if (_strokes.isEmpty) return;
     _strokes.clear();
+    _undoStack.clear();
+    _redoStack.clear();
+    _refreshHistoryListenables();
     notifyListeners();
   }
 
@@ -337,7 +346,10 @@ class PdfAnnotationController extends ChangeNotifier {
   }
 
   /// Append a fully-formed [stroke] to [strokes] and notify listeners.
+  /// Treated as an undoable user-driven action: pushes an undo snapshot
+  /// before appending.
   void addStroke(PdfInkAnnotation stroke) {
+    _pushUndoSnapshot();
     _strokes.add(stroke);
     notifyListeners();
   }
@@ -362,6 +374,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// [currentCreator]: foreign-creator strokes survive untouched. In
   /// single-user mode (both null) every stroke is fair game.
   void startErase({required int pageIndex, required Offset pdfPoint, required double radiusInPdfPoints}) {
+    _pushUndoSnapshot();
     _eraserPrevPoint = pdfPoint;
     _eraserPrevPage = pageIndex;
     _eraserCursorTick.value++;
