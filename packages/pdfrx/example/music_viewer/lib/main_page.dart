@@ -97,45 +97,49 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
       elevation: 8,
       color: Theme.of(context).colorScheme.surface,
       borderRadius: BorderRadius.circular(8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          dragHandle(
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Tooltip(
-                message: 'Drag to move',
-                child: Icon(Icons.drag_indicator),
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            dragHandle(
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Tooltip(
+                  message: 'Drag to move',
+                  child: Icon(Icons.drag_indicator),
+                ),
               ),
             ),
-          ),
-          IconButton.filledTonal(
-            tooltip: 'Pen',
-            isSelected: isPen,
-            selectedIcon: const Icon(Icons.edit),
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.pen),
-          ),
-          IconButton.filledTonal(
-            tooltip: 'Eraser',
-            isSelected: !isPen,
-            selectedIcon: const Icon(Icons.cleaning_services),
-            icon: const Icon(Icons.cleaning_services_outlined),
-            onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.eraser),
-          ),
-          if (isPen) _buildColorButton(),
-          _buildThicknessButton(isPen),
-          IconButton(
-            tooltip: 'Reset annotations',
-            icon: const Icon(Icons.delete_forever),
-            onPressed: _confirmResetAnnotations,
-          ),
-          IconButton(
-            tooltip: 'Close',
-            icon: const Icon(Icons.close),
-            onPressed: () => controller.exitAnnotationMode(),
-          ),
-        ],
+            IconButton.filledTonal(
+              tooltip: 'Pen',
+              isSelected: isPen,
+              selectedIcon: const Icon(Icons.edit),
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.pen),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Eraser',
+              isSelected: !isPen,
+              selectedIcon: const Icon(Icons.cleaning_services),
+              icon: const Icon(Icons.cleaning_services_outlined),
+              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.eraser),
+            ),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            if (isPen) _buildColorButton(),
+            _buildThicknessButton(isPen),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            IconButton(
+              tooltip: 'Reset annotations',
+              icon: const Icon(Icons.delete_forever),
+              onPressed: _confirmResetAnnotations,
+            ),
+            IconButton(
+              tooltip: 'Close',
+              icon: const Icon(Icons.close),
+              onPressed: () => controller.exitAnnotationMode(),
+            ),
+          ],
+        ),
       ),
     );
   }
