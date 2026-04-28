@@ -61,7 +61,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     }
   }
 
-  void _toggleMode() {
+  void _togglePageMode() {
     setState(() => _twoPageMode = !_twoPageMode);
     WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
   }
@@ -281,7 +281,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     FloatingActionButton(
                       heroTag: 'toggleMode',
                       tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
-                      onPressed: _toggleMode,
+                      onPressed: _togglePageMode,
                       child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
                     ),
                   ],
