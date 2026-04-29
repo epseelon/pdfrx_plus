@@ -39,48 +39,57 @@ class PdfAnnotationLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        final committed = controller.strokes.where((s) => s.pageIndex == page.pageNumber - 1).toList(growable: false);
-        return Stack(
-          children: [
-            CustomPaint(
-              painter: InkPainter(
-                strokes: committed,
-                inFlightProvider: () => controller.inFlightStrokesFor(page.pageNumber - 1),
-                eraserCursorProvider: () =>
-                    controller.eraserCursorPageIndex == page.pageNumber - 1 ? controller.eraserCursorPdfPoint : null,
-                eraserRadiusProvider: () => controller.eraserRadius,
-                repaint: Listenable.merge([
-                  controller.inFlightChangedListenable,
-                  controller.eraserCursorChangedListenable,
-                  controller.eraserRadiusListenable,
-                ]),
-                pageWidth: page.width,
-                pageHeight: page.height,
-              ),
-              size: pageRect.size,
-            ),
-            ValueListenableBuilder<bool>(
-              valueListenable: controller.annotationModeListenable,
-              builder: (context, modeOn, _) {
-                if (!modeOn) return const SizedBox.shrink();
-                return Positioned.fill(
-                  child: ValueListenableBuilder<PdfAnnotationTool>(
-                    valueListenable: controller.currentToolListenable,
-                    builder: (context, tool, _) => GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (details) => _onPanStart(tool, details.localPosition),
-                      onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
-                      onPanEnd: (_) => _onPanEnd(tool),
-                      onPanCancel: () => _onPanCancel(tool),
+    return ValueListenableBuilder<bool>(
+      valueListenable: controller.annotationModeListenable,
+      builder: (context, modeOn, _) {
+        // When annotation mode is off, the layer is purely visual: stroke
+        // painting must never absorb taps or pinches that belong to the
+        // viewer's pan/scale + onGeneralTap pipeline below us in the stack.
+        return IgnorePointer(
+          ignoring: !modeOn,
+          child: AnimatedBuilder(
+            animation: controller,
+            builder: (context, _) {
+              final committed = controller.strokes
+                  .where((s) => s.pageIndex == page.pageNumber - 1)
+                  .toList(growable: false);
+              return Stack(
+                children: [
+                  CustomPaint(
+                    painter: InkPainter(
+                      strokes: committed,
+                      inFlightProvider: () => controller.inFlightStrokesFor(page.pageNumber - 1),
+                      eraserCursorProvider: () => controller.eraserCursorPageIndex == page.pageNumber - 1
+                          ? controller.eraserCursorPdfPoint
+                          : null,
+                      eraserRadiusProvider: () => controller.eraserRadius,
+                      repaint: Listenable.merge([
+                        controller.inFlightChangedListenable,
+                        controller.eraserCursorChangedListenable,
+                        controller.eraserRadiusListenable,
+                      ]),
+                      pageWidth: page.width,
+                      pageHeight: page.height,
                     ),
+                    size: pageRect.size,
                   ),
-                );
-              },
-            ),
-          ],
+                  if (modeOn)
+                    Positioned.fill(
+                      child: ValueListenableBuilder<PdfAnnotationTool>(
+                        valueListenable: controller.currentToolListenable,
+                        builder: (context, tool, _) => GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onPanStart: (details) => _onPanStart(tool, details.localPosition),
+                          onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
+                          onPanEnd: (_) => _onPanEnd(tool),
+                          onPanCancel: () => _onPanCancel(tool),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         );
       },
     );

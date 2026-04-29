@@ -516,7 +516,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 child: AnimatedSmoothIndicator(
                   activeIndex: currentSpread.clamp(0, spreadCount - 1),
                   count: spreadCount,
-                  duration: Duration(milliseconds: 500),
+                  duration: Duration(milliseconds: 0),
                   effect: const ExpandingDotsEffect(
                     dotColor: Colors.white54,
                     activeDotColor: Colors.white,
@@ -573,31 +573,18 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   pageTransition: PageTransition.discrete,
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
+                  onGeneralTap: (context, controller, details) {
+                    if (details.type != PdfViewerGeneralTapType.tap) return false;
+                    if (controller.annotationModeListenable.value) return false;
+                    final width = controller.viewSize.width;
+                    if (details.localPosition.dx < width / 2) {
+                      _prev();
+                    } else {
+                      _next();
+                    }
+                    return true;
+                  },
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [
-                    ValueListenableBuilder<bool>(
-                      valueListenable: controller.annotationModeListenable,
-                      builder: (context, annotating, _) {
-                        if (annotating) return const SizedBox.shrink();
-                        return Positioned.fill(
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onTapDown: (_) => _prev(),
-                                ),
-                              ),
-                              Expanded(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onTapDown: (_) => _next(),
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
                     ValueListenableBuilder<bool>(
                       valueListenable: controller.annotationModeListenable,
                       builder: (context, annotating, _) {
