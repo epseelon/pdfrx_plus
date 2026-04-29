@@ -6,14 +6,24 @@ import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 import 'annotation_storage.dart';
 import 'draggable_panel.dart';
 import 'horizontal_facing_pages_layout.dart';
+import 'music_document.dart';
 import 'stamp_image_builder.dart';
 import 'stamp_library.dart';
 import 'stamp_picker_panel.dart';
 
 class MainPage extends StatefulWidget {
-  const MainPage({required this.pdfFilePaths, super.key});
+  const MainPage({
+    required this.documents,
+    required this.annotationStorage,
+    super.key,
+  });
 
-  final List<String> pdfFilePaths;
+  /// The carousel of documents the user can swipe between.
+  final List<MusicDocument> documents;
+
+  /// Backend the page reads from on document open and writes to on
+  /// every annotation change.
+  final AnnotationStorage annotationStorage;
 
   @override
   State<MainPage> createState() => _MainPageState();
@@ -424,8 +434,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     if (index == null) {
       documentRef.value = null;
     } else {
-      final path = widget.pdfFilePaths[index];
-      documentRef.value = PdfDocumentRefFile(path, useProgressiveLoading: useProgressiveLoading);
+      final doc = widget.documents[index];
+      documentRef.value = doc.refBuilder(useProgressiveLoading: useProgressiveLoading);
     }
   }
 
@@ -496,7 +506,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     );
     if (confirmed != true) return;
     controller.clearAnnotations();
-    await deleteAnnotations(widget.pdfFilePaths[idx]);
+    await widget.annotationStorage.delete(widget.documents[idx].storageKey);
   }
 
   int get _step => _twoPageMode ? 2 : 1;
@@ -506,7 +516,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   int _lastSpreadStart(int pageCount) => _twoPageMode && pageCount.isEven ? pageCount - 1 : pageCount;
 
   void _switchDocument(int delta, {bool gotoLast = false}) {
-    final n = widget.pdfFilePaths.length;
+    final n = widget.documents.length;
     setState(() {
       _fileIndex = ((_fileIndex! + delta) % n + n) % n;
       _gotoLastOnReady = gotoLast;
@@ -655,7 +665,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   onAnnotationsChanged: (json) async {
                     final idx = _fileIndex;
                     if (idx == null) return;
-                    await writeAnnotations(widget.pdfFilePaths[idx], json);
+                    await widget.annotationStorage.write(widget.documents[idx].storageKey, json);
                   },
                   onViewerReady: (document, controller) async {
                     controller.requestFocus();
@@ -671,7 +681,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     final idx = _fileIndex;
                     if (idx != null) {
                       try {
-                        final json = await readAnnotations(widget.pdfFilePaths[idx]);
+                        final json = await widget.annotationStorage.read(widget.documents[idx].storageKey);
                         if (json != null) controller.applyAnnotationsFromJson(json);
                       } catch (e, st) {
                         debugPrint('annotation load failed: $e\n$st');
@@ -798,7 +808,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             onPressed: () {
               if (_fileIndex != null) {
                 setState(() {
-                  _fileIndex = (_fileIndex! + 1) % widget.pdfFilePaths.length;
+                  _fileIndex = (_fileIndex! + 1) % widget.documents.length;
                   _openFile(index: _fileIndex);
                 });
               }

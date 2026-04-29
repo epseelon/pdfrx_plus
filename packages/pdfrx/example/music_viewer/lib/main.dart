@@ -1,39 +1,37 @@
-import 'dart:io';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:pdfrx/pdfrx.dart';
 
-import 'main_page.dart';
+import 'annotation_storage.dart';
+import 'app.dart';
+import 'music_document.dart';
+// `kIsWeb` picks the runtime branch; the conditional import keeps the
+// `dart:io`/`path_provider` code out of the JS bundle so the web build
+// still compiles. Both files expose the same `prepareNativeSetup` and
+// re-export the same `NativeSetup` type.
+import 'native_setup.dart' if (dart.library.io) 'native_setup_io.dart';
 
 const _bundledPdfs = ['01.pdf', '02.pdf', '03.pdf'];
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final tempDir = await getTemporaryDirectory();
-  final paths = List<String>.of([]);
-  for (final name in _bundledPdfs) {
-    final target = File('${tempDir.path}/$name');
-    if (target.existsSync()) {
-      target.deleteSync();
-    }
-    final data = await rootBundle.load('assets/$name');
-    await target.writeAsBytes(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes));
-    paths.add(target.path);
+  final List<MusicDocument> documents;
+  final AnnotationStorage storage;
+  if (kIsWeb) {
+    documents = [
+      for (final name in _bundledPdfs)
+        MusicDocument(
+          storageKey: 'asset:$name',
+          displayName: name,
+          refBuilder: ({useProgressiveLoading = true}) =>
+              PdfDocumentRefAsset('assets/$name', useProgressiveLoading: useProgressiveLoading),
+        ),
+    ];
+    storage = InMemoryAnnotationStorage();
+  } else {
+    final setup = await prepareNativeSetup(bundledPdfs: _bundledPdfs);
+    documents = setup.documents;
+    storage = setup.storage;
   }
-  runApp(MyApp(pdfFilePaths: paths));
-}
-
-class MyApp extends StatelessWidget {
-  const MyApp({required this.pdfFilePaths, super.key});
-
-  final List<String> pdfFilePaths;
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Music Viewer',
-      home: MainPage(pdfFilePaths: pdfFilePaths),
-    );
-  }
+  runApp(MusicViewerApp(documents: documents, annotationStorage: storage));
 }

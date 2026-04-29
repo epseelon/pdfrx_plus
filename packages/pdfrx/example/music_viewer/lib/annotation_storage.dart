@@ -1,87 +1,37 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
-
-const _annotationsSubdir = 'pdfrx_annotations';
-
-/// Returns the [File] that stores annotations for the document at
-/// [absolutePdfPath].
+/// Persistence backend for per-document annotations.
 ///
-/// The filename is the hex SHA-1 of [absolutePdfPath] suffixed with `.json`,
-/// placed under `<appDocumentsDir>/pdfrx_annotations/`. Pass [overrideRootDir]
-/// in tests; production code falls back to
-/// [getApplicationDocumentsDirectory] so annotations survive across app
-/// launches and OS-level temp cleanup.
-Future<File> annotationsFileFor(
-  String absolutePdfPath, {
-  Directory? overrideRootDir,
-}) async {
-  final rootDir = overrideRootDir ?? await getApplicationDocumentsDirectory();
-  final dir = Directory('${rootDir.path}/$_annotationsSubdir');
-  if (!await dir.exists()) {
-    await dir.create(recursive: true);
-  }
-  final hash = sha1.convert(utf8.encode(absolutePdfPath)).toString();
-  return File('${dir.path}/$hash.json');
+/// `MainPage` talks to this interface only; concrete implementations
+/// pick the appropriate medium for their host platform — files on
+/// native (see `annotation_storage_file.dart`), in-memory on web.
+abstract class AnnotationStorage {
+  /// Returns the saved annotations JSON for [key], or `null` if none
+  /// has been written yet.
+  Future<String?> read(String key);
+
+  /// Persists [json] for [key], overwriting any prior content.
+  Future<void> write(String key, String json);
+
+  /// Removes any saved annotations for [key]. No-op when there are none.
+  Future<void> delete(String key);
 }
 
-/// Reads the saved annotations JSON for [absolutePdfPath], or `null` if no
-/// file exists. I/O failures are caught and logged.
-Future<String?> readAnnotations(
-  String absolutePdfPath, {
-  Directory? overrideRootDir,
-}) async {
-  try {
-    final file = await annotationsFileFor(
-      absolutePdfPath,
-      overrideRootDir: overrideRootDir,
-    );
-    if (!await file.exists()) return null;
-    return await file.readAsString();
-  } catch (e, st) {
-    debugPrint('readAnnotations failed for $absolutePdfPath: $e\n$st');
-    return null;
-  }
-}
+/// In-memory [AnnotationStorage] used on the web. Annotations are kept
+/// only for the current page session — a hard reload starts from a
+/// clean slate. Good enough to demo the flow without depending on
+/// `dart:io` or a browser-storage package.
+class InMemoryAnnotationStorage implements AnnotationStorage {
+  final Map<String, String> _store = <String, String>{};
 
-/// Writes [json] to the annotations file for [absolutePdfPath], overwriting
-/// any prior content. I/O failures are caught and logged.
-Future<void> writeAnnotations(
-  String absolutePdfPath,
-  String json, {
-  Directory? overrideRootDir,
-}) async {
-  try {
-    final file = await annotationsFileFor(
-      absolutePdfPath,
-      overrideRootDir: overrideRootDir,
-    );
-    await file.writeAsString(json);
-    debugPrint('writeAnnotations succeeded in ${file.absolute}');
-  } catch (e, st) {
-    debugPrint('writeAnnotations failed for $absolutePdfPath: $e\n$st');
-  }
-}
+  @override
+  Future<String?> read(String key) async => _store[key];
 
-/// Removes the annotations file for [absolutePdfPath], if any. No-op when
-/// no file has been written for that path. I/O failures are caught and
-/// logged.
-Future<void> deleteAnnotations(
-  String absolutePdfPath, {
-  Directory? overrideRootDir,
-}) async {
-  try {
-    final file = await annotationsFileFor(
-      absolutePdfPath,
-      overrideRootDir: overrideRootDir,
-    );
-    if (await file.exists()) {
-      await file.delete();
-    }
-  } catch (e, st) {
-    debugPrint('deleteAnnotations failed for $absolutePdfPath: $e\n$st');
+  @override
+  Future<void> write(String key, String json) async {
+    _store[key] = json;
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    _store.remove(key);
   }
 }
