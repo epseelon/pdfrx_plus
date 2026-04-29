@@ -104,6 +104,7 @@ class PdfAnnotationController extends ChangeNotifier {
   Offset? _eraserPrevPoint;
   int? _eraserPrevPage;
   _StampDragState? _stampDragState;
+  final Map<int, _PageLayoutInfo> _pageLayouts = {};
 
   /// Bumps on every [appendPoint] so the live-drawing layer can repaint
   /// without rebuilding the committed-strokes painter.
@@ -314,6 +315,12 @@ class PdfAnnotationController extends ChangeNotifier {
   Future<void> exitMode({required Future<void> Function(String json)? onAnnotationsChanged}) async {
     if (!_modeListenable.value) return;
     final creator = _currentCreator;
+    // Tear down transient stamp state before flipping mode off so the
+    // selection overlay (handles + delete button) doesn't leak past
+    // the session boundary, and any half-finished drag is dropped.
+    if (_stampDragState != null) _stampDragState = null;
+    if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_pendingStamp.value != null) _pendingStamp.value = null;
     _modeListenable.value = false;
     if (onAnnotationsChanged != null) {
       await onAnnotationsChanged(_exportJsonForCreator(creator));
@@ -698,6 +705,27 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_canRedo.value != canRedo) _canRedo.value = canRedo;
   }
 
+  /// Register the viewer-local rect (in the parent stack's pixel space)
+  /// and PDF-point size for [pageIndex]. Per-page annotation layers call
+  /// this on mount and whenever their `pageRect` changes so the
+  /// controller can reason about cross-page stamp drags.
+  ///
+  /// Idempotent — a register call with identical [viewerRect] and
+  /// [pageSize] does not mutate state.
+  void registerPageLayout({required int pageIndex, required Rect viewerRect, required Size pageSize}) {
+    final existing = _pageLayouts[pageIndex];
+    if (existing != null && existing.viewerRect == viewerRect && existing.pageSize == pageSize) {
+      return;
+    }
+    _pageLayouts[pageIndex] = _PageLayoutInfo(viewerRect: viewerRect, pageSize: pageSize);
+  }
+
+  /// Drop the registered layout for [pageIndex] (called when an
+  /// annotation layer unmounts).
+  void unregisterPageLayout(int pageIndex) {
+    _pageLayouts.remove(pageIndex);
+  }
+
   /// Arm a [PdfStampDefinition] for placement. Pass `null` to disarm.
   /// Setting a pending stamp clears any current stamp selection so the
   /// next page tap drops a new stamp instead of moving the selection.
@@ -748,7 +776,10 @@ class PdfAnnotationController extends ChangeNotifier {
   ///
   /// Synchronous failures (e.g. pathological arguments) are caught and
   /// logged via [debugPrint]; no partial state is leaked.
-  void placeStamp({
+  ///
+  /// Returns the new stamp's `id` on success, or `null` when placement
+  /// failed (so the caller can auto-select the new stamp).
+  String? placeStamp({
     required Uint8List bytes,
     required String contentType,
     required int pageIndex,
@@ -785,8 +816,10 @@ class PdfAnnotationController extends ChangeNotifier {
         ),
       );
       notifyListeners();
+      return id;
     } catch (e, st) {
       debugPrint('placeStamp failed: $e\n$st');
+      return null;
     }
   }
 
@@ -832,6 +865,7 @@ class PdfAnnotationController extends ChangeNotifier {
       handle: handle,
       originalRect: stamp.rectInPdfSpace,
       originalRotation: stamp.rotationDeg,
+      originalPageIndex: stamp.pageIndex,
     );
   }
 
@@ -853,9 +887,80 @@ class PdfAnnotationController extends ChangeNotifier {
     _stampDragTick.value++;
   }
 
+  /// Translate the selected stamp by [cumulativeDeltaViewer] expressed
+  /// in the viewer's pixel coordinate space (the parent stack the
+  /// per-page annotation layers sit in). Reassigns the stamp's
+  /// `pageIndex` when the bbox center crosses into a different
+  /// registered page so multi-page users can drag a stamp from page A
+  /// onto page B and continue interacting with it on the new page.
+  ///
+  /// Falls back to keeping the stamp on its original page when the new
+  /// center is outside every registered page (gutter / off-screen). The
+  /// rect is always recomputed in the destination page's PDF point
+  /// space, preserving its visible pixel size.
+  ///
+  /// No-op when no drag is in progress, the active handle isn't
+  /// [PdfStampHandle.body], or the original page's layout is no longer
+  /// registered.
+  void applyStampMoveViewer(Offset cumulativeDeltaViewer) {
+    final state = _stampDragState;
+    if (state == null) return;
+    if (state.handle != PdfStampHandle.body) return;
+
+    final origPageInfo = _pageLayouts[state.originalPageIndex];
+    if (origPageInfo == null) return;
+
+    final origRectViewer = _pdfRectToViewer(state.originalRect, origPageInfo);
+    final newRectViewer = origRectViewer.shift(cumulativeDeltaViewer);
+    final center = newRectViewer.center;
+
+    var targetPageIdx = state.originalPageIndex;
+    for (final entry in _pageLayouts.entries) {
+      if (entry.value.viewerRect.contains(center)) {
+        targetPageIdx = entry.key;
+        break;
+      }
+    }
+    final targetPageInfo = _pageLayouts[targetPageIdx];
+    if (targetPageInfo == null) return;
+
+    final newPdfRect = _viewerRectToPdf(newRectViewer, targetPageInfo);
+    _replaceSelectedStamp(
+      (s) => s.copyWith(pageIndex: targetPageIdx, rectInPdfSpace: newPdfRect, updatedAt: _defaultClock()),
+    );
+    _stampDragTick.value++;
+  }
+
+  Rect _pdfRectToViewer(Rect pdfRect, _PageLayoutInfo info) {
+    final scaleX = info.viewerRect.width / info.pageSize.width;
+    final scaleY = info.viewerRect.height / info.pageSize.height;
+    return Rect.fromLTWH(
+      info.viewerRect.left + pdfRect.left * scaleX,
+      info.viewerRect.top + pdfRect.top * scaleY,
+      pdfRect.width * scaleX,
+      pdfRect.height * scaleY,
+    );
+  }
+
+  Rect _viewerRectToPdf(Rect viewerRect, _PageLayoutInfo info) {
+    final scaleX = info.pageSize.width / info.viewerRect.width;
+    final scaleY = info.pageSize.height / info.viewerRect.height;
+    return Rect.fromLTWH(
+      (viewerRect.left - info.viewerRect.left) * scaleX,
+      (viewerRect.top - info.viewerRect.top) * scaleY,
+      viewerRect.width * scaleX,
+      viewerRect.height * scaleY,
+    );
+  }
+
   /// Resize the selected stamp's bbox by applying [cumulativeDeltaPdf]
-  /// to the corner/edge captured at [beginStampDrag]. Clamps each axis
-  /// to [kMinStampSizePts]. Bumps [stampDragChangedListenable].
+  /// to the corner/edge captured at [beginStampDrag].
+  ///
+  /// Corner handles preserve the bbox's aspect ratio at drag-start —
+  /// the dominant axis (the one the cursor pulls further in proportion
+  /// to its original size) drives a uniform scale; the opposite corner
+  /// anchors. Edge handles stretch a single axis. Both modes clamp each
+  /// axis to [kMinStampSizePts]. Bumps [stampDragChangedListenable].
   void applyStampResize(Offset cumulativeDeltaPdf) {
     final state = _stampDragState;
     if (state == null) return;
@@ -863,43 +968,101 @@ class PdfAnnotationController extends ChangeNotifier {
     if (handle == PdfStampHandle.body || handle == PdfStampHandle.rotation) return;
 
     final orig = state.originalRect;
+    final dx = cumulativeDeltaPdf.dx;
+    final dy = cumulativeDeltaPdf.dy;
+
+    final newRect = _isCornerHandle(handle)
+        ? _resizeCornerLocked(orig: orig, handle: handle, dx: dx, dy: dy)
+        : _resizeEdge(orig: orig, handle: handle, dx: dx, dy: dy);
+
+    _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
+    _stampDragTick.value++;
+  }
+
+  static bool _isCornerHandle(PdfStampHandle h) =>
+      h == PdfStampHandle.topLeft ||
+      h == PdfStampHandle.topRight ||
+      h == PdfStampHandle.bottomLeft ||
+      h == PdfStampHandle.bottomRight;
+
+  Rect _resizeCornerLocked({
+    required Rect orig,
+    required PdfStampHandle handle,
+    required double dx,
+    required double dy,
+  }) {
+    // Per-axis candidate dims based on the raw cursor delta.
+    double candidateWidth;
+    double candidateHeight;
+    switch (handle) {
+      case PdfStampHandle.topLeft:
+        candidateWidth = orig.width - dx;
+        candidateHeight = orig.height - dy;
+      case PdfStampHandle.topRight:
+        candidateWidth = orig.width + dx;
+        candidateHeight = orig.height - dy;
+      case PdfStampHandle.bottomLeft:
+        candidateWidth = orig.width - dx;
+        candidateHeight = orig.height + dy;
+      case PdfStampHandle.bottomRight:
+        candidateWidth = orig.width + dx;
+        candidateHeight = orig.height + dy;
+      // ignore: no_default_cases
+      default:
+        candidateWidth = orig.width;
+        candidateHeight = orig.height;
+    }
+
+    // Pick the dominant axis by proportional change away from 1.0;
+    // the loser is recomputed from the original aspect ratio.
+    final scaleW = candidateWidth / orig.width;
+    final scaleH = candidateHeight / orig.height;
+    var scale = (scaleW - 1).abs() >= (scaleH - 1).abs() ? scaleW : scaleH;
+
+    // Min-size clamp respects aspect: pick the larger of the two
+    // axis-specific min scales so neither dim drops below the limit.
+    final minScale = math.max(kMinStampSizePts / orig.width, kMinStampSizePts / orig.height);
+    if (scale < minScale) scale = minScale;
+
+    final newWidth = orig.width * scale;
+    final newHeight = orig.height * scale;
+
+    // Anchor on the opposite corner.
+    switch (handle) {
+      case PdfStampHandle.topLeft:
+        return Rect.fromLTRB(orig.right - newWidth, orig.bottom - newHeight, orig.right, orig.bottom);
+      case PdfStampHandle.topRight:
+        return Rect.fromLTRB(orig.left, orig.bottom - newHeight, orig.left + newWidth, orig.bottom);
+      case PdfStampHandle.bottomLeft:
+        return Rect.fromLTRB(orig.right - newWidth, orig.top, orig.right, orig.top + newHeight);
+      case PdfStampHandle.bottomRight:
+        return Rect.fromLTRB(orig.left, orig.top, orig.left + newWidth, orig.top + newHeight);
+      // ignore: no_default_cases
+      default:
+        return orig;
+    }
+  }
+
+  Rect _resizeEdge({required Rect orig, required PdfStampHandle handle, required double dx, required double dy}) {
     var left = orig.left;
     var top = orig.top;
     var right = orig.right;
     var bottom = orig.bottom;
 
-    final dx = cumulativeDeltaPdf.dx;
-    final dy = cumulativeDeltaPdf.dy;
-
-    final movesLeft =
-        handle == PdfStampHandle.topLeft || handle == PdfStampHandle.left || handle == PdfStampHandle.bottomLeft;
-    final movesRight =
-        handle == PdfStampHandle.topRight || handle == PdfStampHandle.right || handle == PdfStampHandle.bottomRight;
-    final movesTop =
-        handle == PdfStampHandle.topLeft || handle == PdfStampHandle.top || handle == PdfStampHandle.topRight;
-    final movesBottom =
-        handle == PdfStampHandle.bottomLeft || handle == PdfStampHandle.bottom || handle == PdfStampHandle.bottomRight;
-
-    if (movesLeft) {
+    if (handle == PdfStampHandle.left) {
       left = orig.left + dx;
       if (right - left < kMinStampSizePts) left = right - kMinStampSizePts;
-    }
-    if (movesRight) {
+    } else if (handle == PdfStampHandle.right) {
       right = orig.right + dx;
       if (right - left < kMinStampSizePts) right = left + kMinStampSizePts;
-    }
-    if (movesTop) {
+    } else if (handle == PdfStampHandle.top) {
       top = orig.top + dy;
       if (bottom - top < kMinStampSizePts) top = bottom - kMinStampSizePts;
-    }
-    if (movesBottom) {
+    } else if (handle == PdfStampHandle.bottom) {
       bottom = orig.bottom + dy;
       if (bottom - top < kMinStampSizePts) bottom = top + kMinStampSizePts;
     }
-
-    final newRect = Rect.fromLTRB(left, top, right, bottom);
-    _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
-    _stampDragTick.value++;
+    return Rect.fromLTRB(left, top, right, bottom);
   }
 
   /// Set the selected stamp's rotation to [absoluteAngleDeg] (degrees,
@@ -1019,12 +1182,21 @@ class _StampDragState {
     required this.handle,
     required this.originalRect,
     required this.originalRotation,
+    required this.originalPageIndex,
   });
 
   final String stampId;
   final PdfStampHandle handle;
   final Rect originalRect;
   final double originalRotation;
+  final int originalPageIndex;
+}
+
+class _PageLayoutInfo {
+  _PageLayoutInfo({required this.viewerRect, required this.pageSize});
+
+  final Rect viewerRect;
+  final Size pageSize;
 }
 
 bool _segmentsCloseOrIntersect(Offset a1, Offset a2, Offset b1, Offset b2, double radius) {

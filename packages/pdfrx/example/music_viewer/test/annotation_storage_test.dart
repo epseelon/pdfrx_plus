@@ -20,8 +20,8 @@ void main() {
     const path = '/some/absolute/path/score.pdf';
     const json = '{"format":"https://pspdfkit.com/instant-json/v1","annotations":[]}';
 
-    await writeAnnotations(path, json, overrideTempDir: tempDir);
-    final loaded = await readAnnotations(path, overrideTempDir: tempDir);
+    await writeAnnotations(path, json, overrideRootDir: tempDir);
+    final loaded = await readAnnotations(path, overrideRootDir: tempDir);
 
     expect(loaded, equals(json));
   });
@@ -29,7 +29,7 @@ void main() {
   test('readAnnotations returns null for a path that has never been written', () async {
     final loaded = await readAnnotations(
       '/never/written/score.pdf',
-      overrideTempDir: tempDir,
+      overrideRootDir: tempDir,
     );
 
     expect(loaded, isNull);
@@ -38,20 +38,20 @@ void main() {
   test('writeAnnotations overwrites prior content', () async {
     const path = '/some/absolute/path/score.pdf';
 
-    await writeAnnotations(path, 'first', overrideTempDir: tempDir);
-    await writeAnnotations(path, 'second', overrideTempDir: tempDir);
-    final loaded = await readAnnotations(path, overrideTempDir: tempDir);
+    await writeAnnotations(path, 'first', overrideRootDir: tempDir);
+    await writeAnnotations(path, 'second', overrideRootDir: tempDir);
+    final loaded = await readAnnotations(path, overrideRootDir: tempDir);
 
     expect(loaded, equals('second'));
   });
 
   test('deleteAnnotations after writeAnnotations removes the file', () async {
     const path = '/some/absolute/path/score.pdf';
-    await writeAnnotations(path, '{}', overrideTempDir: tempDir);
+    await writeAnnotations(path, '{}', overrideRootDir: tempDir);
 
-    await deleteAnnotations(path, overrideTempDir: tempDir);
+    await deleteAnnotations(path, overrideRootDir: tempDir);
 
-    expect(await readAnnotations(path, overrideTempDir: tempDir), isNull);
+    expect(await readAnnotations(path, overrideRootDir: tempDir), isNull);
     final files = Directory('${tempDir.path}/pdfrx_annotations').listSync().whereType<File>().toList();
     expect(files, isEmpty);
   });
@@ -59,23 +59,23 @@ void main() {
   test('deleteAnnotations on a path that has never been written is a no-op', () async {
     await deleteAnnotations(
       '/never/written/score.pdf',
-      overrideTempDir: tempDir,
+      overrideRootDir: tempDir,
     );
-    expect(await readAnnotations('/never/written/score.pdf', overrideTempDir: tempDir), isNull);
+    expect(await readAnnotations('/never/written/score.pdf', overrideRootDir: tempDir), isNull);
   });
 
   test('SHA-1-keyed filename: same path produces same file, different paths produce different files', () async {
     const pathA = '/docs/score-a.pdf';
     const pathB = '/docs/score-b.pdf';
 
-    await writeAnnotations(pathA, 'A1', overrideTempDir: tempDir);
-    await writeAnnotations(pathA, 'A2', overrideTempDir: tempDir);
-    await writeAnnotations(pathB, 'B1', overrideTempDir: tempDir);
+    await writeAnnotations(pathA, 'A1', overrideRootDir: tempDir);
+    await writeAnnotations(pathA, 'A2', overrideRootDir: tempDir);
+    await writeAnnotations(pathB, 'B1', overrideRootDir: tempDir);
 
     final files = Directory('${tempDir.path}/pdfrx_annotations').listSync().whereType<File>().toList();
     expect(files.length, 2);
 
-    expect(await readAnnotations(pathA, overrideTempDir: tempDir), 'A2');
-    expect(await readAnnotations(pathB, overrideTempDir: tempDir), 'B1');
+    expect(await readAnnotations(pathA, overrideRootDir: tempDir), 'A2');
+    expect(await readAnnotations(pathB, overrideRootDir: tempDir), 'B1');
   });
 }

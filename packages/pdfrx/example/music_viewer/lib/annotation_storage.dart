@@ -11,14 +11,16 @@ const _annotationsSubdir = 'pdfrx_annotations';
 /// [absolutePdfPath].
 ///
 /// The filename is the hex SHA-1 of [absolutePdfPath] suffixed with `.json`,
-/// placed under `<tempDir>/pdfrx_annotations/`. Pass [overrideTempDir] in
-/// tests; production code falls back to [getTemporaryDirectory].
+/// placed under `<appDocumentsDir>/pdfrx_annotations/`. Pass [overrideRootDir]
+/// in tests; production code falls back to
+/// [getApplicationDocumentsDirectory] so annotations survive across app
+/// launches and OS-level temp cleanup.
 Future<File> annotationsFileFor(
   String absolutePdfPath, {
-  Directory? overrideTempDir,
+  Directory? overrideRootDir,
 }) async {
-  final tempDir = overrideTempDir ?? await getTemporaryDirectory();
-  final dir = Directory('${tempDir.path}/$_annotationsSubdir');
+  final rootDir = overrideRootDir ?? await getApplicationDocumentsDirectory();
+  final dir = Directory('${rootDir.path}/$_annotationsSubdir');
   if (!await dir.exists()) {
     await dir.create(recursive: true);
   }
@@ -30,12 +32,12 @@ Future<File> annotationsFileFor(
 /// file exists. I/O failures are caught and logged.
 Future<String?> readAnnotations(
   String absolutePdfPath, {
-  Directory? overrideTempDir,
+  Directory? overrideRootDir,
 }) async {
   try {
     final file = await annotationsFileFor(
       absolutePdfPath,
-      overrideTempDir: overrideTempDir,
+      overrideRootDir: overrideRootDir,
     );
     if (!await file.exists()) return null;
     return await file.readAsString();
@@ -50,12 +52,12 @@ Future<String?> readAnnotations(
 Future<void> writeAnnotations(
   String absolutePdfPath,
   String json, {
-  Directory? overrideTempDir,
+  Directory? overrideRootDir,
 }) async {
   try {
     final file = await annotationsFileFor(
       absolutePdfPath,
-      overrideTempDir: overrideTempDir,
+      overrideRootDir: overrideRootDir,
     );
     await file.writeAsString(json);
     debugPrint('writeAnnotations succeeded in ${file.absolute}');
@@ -69,12 +71,12 @@ Future<void> writeAnnotations(
 /// logged.
 Future<void> deleteAnnotations(
   String absolutePdfPath, {
-  Directory? overrideTempDir,
+  Directory? overrideRootDir,
 }) async {
   try {
     final file = await annotationsFileFor(
       absolutePdfPath,
-      overrideTempDir: overrideTempDir,
+      overrideRootDir: overrideRootDir,
     );
     if (await file.exists()) {
       await file.delete();

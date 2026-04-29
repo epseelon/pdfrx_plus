@@ -9,7 +9,10 @@ import 'package:flutter_svg/flutter_svg.dart';
 ///
 /// Wraps the rendered child in a `SizedBox.fromSize` to enforce the exact
 /// `displaySize` requested by the annotation layer (the builder contract
-/// requires no intrinsic sizing).
+/// requires no intrinsic sizing). Uses [BoxFit.fill] so edge-handle
+/// resize actually stretches the image (corner handles preserve aspect
+/// at the bbox layer, so a uniformly-scaled rect renders identically
+/// under fill or contain).
 Widget stampImageBuilder(BuildContext context, Uint8List bytes, String contentType, Size displaySize) {
   if (contentType == 'image/svg+xml') {
     return SizedBox.fromSize(
@@ -18,7 +21,7 @@ Widget stampImageBuilder(BuildContext context, Uint8List bytes, String contentTy
         bytes,
         width: displaySize.width,
         height: displaySize.height,
-        fit: BoxFit.contain,
+        fit: BoxFit.fill,
       ),
     );
   }

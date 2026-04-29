@@ -372,4 +372,36 @@ void main() {
       expect(controller.stamps.single.id, 'a');
     });
   });
+
+  group('PdfAnnotationController.exitMode tears down transient stamp state', () {
+    test('clears selection and pending stamp so the layer overlay does not leak past the session', () async {
+      final controller = PdfAnnotationController();
+      addTearDown(controller.dispose);
+
+      controller.enterMode(creatorName: 'alice', tool: PdfAnnotationTool.stamp);
+      controller.placeStamp(
+        bytes: Uint8List.fromList([1]),
+        contentType: 'image/svg+xml',
+        pageIndex: 0,
+        pdfPoint: const Offset(50, 50),
+        intrinsicSize: const Size(24, 24),
+        pageSize: _pageSize,
+        idGenerator: () => 'a',
+      );
+      // Pending must be armed first; setPendingStamp clears selection,
+      // so swap the order vs. how the user sees it.
+      controller.setPendingStamp(_def());
+      controller.selectStamp('a');
+      expect(controller.selectedStampIdListenable.value, 'a');
+      expect(controller.pendingStampListenable.value, isNotNull);
+
+      await controller.exitMode(onAnnotationsChanged: null);
+
+      expect(controller.selectedStampIdListenable.value, isNull);
+      expect(controller.pendingStampListenable.value, isNull);
+      // Placed stamps survive — only the transient selection/pending
+      // state is cleared.
+      expect(controller.stamps, hasLength(1));
+    });
+  });
 }

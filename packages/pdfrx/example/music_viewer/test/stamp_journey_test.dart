@@ -86,7 +86,9 @@ class _StampJourneyRobot {
       case PdfStampHandle.right:
         start = Offset(rect.right, rect.center.dy);
       case PdfStampHandle.rotation:
-        start = Offset(rect.center.dx, rect.top + 6); // _kRotateHandleInsetPx
+        // Rotation handle floats above the bbox top (gap + handle/2);
+        // see _kRotateHandleGapPx + _kRotateHandlePx in pdf_annotation_layer.dart.
+        start = Offset(rect.center.dx, rect.top - 20);
     }
     final startGlobal = _layerOffsetFor(start.dx, start.dy);
     final gesture = await tester.startGesture(startGlobal);

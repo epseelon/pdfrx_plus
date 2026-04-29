@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
 
@@ -17,6 +20,40 @@ const Map<String, String> _kFriendlyCategoryTitles = {
 final RegExp _kAssetPattern = RegExp(r'^assets/music_stamps/([^/]+)/([^/]+)\.svg$');
 final RegExp _kSortPrefix = RegExp(r'^\d+_');
 
+const Size _kFallbackIntrinsicSize = Size(24, 24);
+
+// SVG attribute matchers. The library prefers viewBox (most modern SVGs
+// have one); falls back to width+height attributes; otherwise yields a
+// 24×24 default so the picker still renders something reasonable.
+final RegExp _kViewBoxRegExp = RegExp(
+  r'viewBox\s*=\s*["\x27]\s*([\-\d.eE]+)\s+([\-\d.eE]+)\s+([\d.eE]+)\s+([\d.eE]+)\s*["\x27]',
+);
+final RegExp _kSvgWidthRegExp = RegExp(r'<svg\b[^>]*\bwidth\s*=\s*["\x27]([\d.eE]+)');
+final RegExp _kSvgHeightRegExp = RegExp(r'<svg\b[^>]*\bheight\s*=\s*["\x27]([\d.eE]+)');
+
+/// Parse the intrinsic size declared by an SVG document. Tries the
+/// `viewBox` attribute first (the modern, scale-independent form), then
+/// falls back to literal `width`/`height` attributes on `<svg>`.
+/// Returns `null` when neither is parseable so callers can pick a
+/// safe default.
+@visibleForTesting
+Size? parseSvgIntrinsicSize(String svg) {
+  final viewBox = _kViewBoxRegExp.firstMatch(svg);
+  if (viewBox != null) {
+    final w = double.tryParse(viewBox.group(3)!);
+    final h = double.tryParse(viewBox.group(4)!);
+    if (w != null && h != null && w > 0 && h > 0) return Size(w, h);
+  }
+  final widthMatch = _kSvgWidthRegExp.firstMatch(svg);
+  final heightMatch = _kSvgHeightRegExp.firstMatch(svg);
+  if (widthMatch != null && heightMatch != null) {
+    final w = double.tryParse(widthMatch.group(1)!);
+    final h = double.tryParse(heightMatch.group(1)!);
+    if (w != null && h != null && w > 0 && h > 0) return Size(w, h);
+  }
+  return null;
+}
+
 /// Scan [bundle]'s `AssetManifest` for `assets/music_stamps/<category>/<file>.svg`
 /// entries and group them into [PdfViewerStampCategory] objects.
 ///
@@ -35,12 +72,21 @@ Future<List<PdfViewerStampCategory>> loadStampLibrary({AssetBundle? bundle}) asy
     final categoryId = match.group(1)!;
     final stampId = match.group(2)!;
     final displayName = _displayNameForStampId(stampId);
+
+    // Eagerly load each SVG once at scan time so we can extract its
+    // intrinsic size (drives the picker thumbnail aspect AND the
+    // initial bbox aspect when the user drops a new stamp). Asset
+    // bytes are cached by Flutter's bundle layer; the cached
+    // bytesLoader returns the same Uint8List without a second read.
+    final bytes = await _loadAssetBytes(assetBundle, assetKey);
+    final intrinsic = parseSvgIntrinsicSize(utf8.decode(bytes, allowMalformed: true)) ?? _kFallbackIntrinsicSize;
+
     final stamp = PdfStampDefinition(
       id: stampId,
       name: displayName,
       contentType: 'image/svg+xml',
-      bytesLoader: () => _loadAssetBytes(assetBundle, assetKey),
-      intrinsicSize: const Size(24, 24),
+      bytesLoader: () async => bytes,
+      intrinsicSize: intrinsic,
     );
     groups.putIfAbsent(categoryId, () => []).add(stamp);
   }

@@ -134,24 +134,10 @@ class AnnotationToolButtons extends StatelessWidget {
 ///
 /// Tooltips are stable selectors used by the toolbar widget test.
 class AnnotationStylePopups extends StatelessWidget {
-  const AnnotationStylePopups({
-    required this.controller,
-    required this.tool,
-    this.onToggleStampPicker,
-    this.stampPickerOpenListenable,
-    super.key,
-  });
+  const AnnotationStylePopups({required this.controller, required this.tool, super.key});
 
   final PdfViewerController controller;
   final PdfAnnotationTool tool;
-
-  /// Toggles the stamp picker visibility. Required when [tool] can be
-  /// [PdfAnnotationTool.stamp]; ignored otherwise.
-  final VoidCallback? onToggleStampPicker;
-
-  /// Optional listenable surfacing the picker's open state so the
-  /// toggle button can show its selected variant.
-  final ValueListenable<bool>? stampPickerOpenListenable;
 
   @override
   Widget build(BuildContext context) {
@@ -168,24 +154,10 @@ class AnnotationStylePopups extends StatelessWidget {
       case PdfAnnotationTool.eraser:
         return _ThicknessPopup(controller: controller, tool: tool);
       case PdfAnnotationTool.stamp:
-        final pickerListenable = stampPickerOpenListenable;
-        if (pickerListenable == null) {
-          return IconButton(
-            tooltip: 'Stamp library',
-            icon: const Icon(Icons.image_outlined),
-            onPressed: onToggleStampPicker,
-          );
-        }
-        return ValueListenableBuilder<bool>(
-          valueListenable: pickerListenable,
-          builder: (context, open, _) => IconButton.filledTonal(
-            tooltip: 'Stamp library',
-            isSelected: open,
-            selectedIcon: const Icon(Icons.image),
-            icon: const Icon(Icons.image_outlined),
-            onPressed: onToggleStampPicker,
-          ),
-        );
+        // The stamp library is mounted as its own floating
+        // `DraggablePanel` keyed off the active tool, so the toolbar's
+        // style row has nothing to add for the stamp tool.
+        return const SizedBox.shrink();
     }
   }
 }
@@ -399,7 +371,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final documentRef = ValueNotifier<PdfDocumentRef?>(null);
   final controller = PdfViewerController();
   final _currentPage = ValueNotifier<int>(1);
-  final _pickerOpen = ValueNotifier<bool>(true);
 
   final String _creatorName = 'alice';
 
@@ -430,7 +401,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.removeObserver(this);
     documentRef.dispose();
     _currentPage.dispose();
-    _pickerOpen.dispose();
     super.dispose();
   }
 
@@ -485,12 +455,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               stampAvailable: (_stampCategories?.isNotEmpty ?? false),
             ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
-            AnnotationStylePopups(
-              controller: controller,
-              tool: tool,
-              onToggleStampPicker: () => _pickerOpen.value = !_pickerOpen.value,
-              stampPickerOpenListenable: _pickerOpen,
-            ),
+            AnnotationStylePopups(controller: controller, tool: tool),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             AnnotationUndoRedoButtons(
               canUndoListenable: controller.canUndoListenable,
@@ -772,42 +737,50 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               return ValueListenableBuilder<PdfAnnotationTool>(
                 valueListenable: controller.annotationToolListenable,
                 builder: (context, tool, _) {
+                  // Library visibility tracks the active tool: visible
+                  // when the user is in stamp mode, hidden otherwise.
                   if (tool != PdfAnnotationTool.stamp) return const SizedBox.shrink();
-                  return ValueListenableBuilder<bool>(
-                    valueListenable: _pickerOpen,
-                    builder: (context, open, _) {
-                      if (!open) return const SizedBox.shrink();
-                      return Positioned.fill(
-                        child: DraggablePanel(
-                          initialOffset: const Offset(16, 16),
-                          builder: (context, dragHandle) => Material(
-                            elevation: 8,
-                            color: Theme.of(context).colorScheme.surface,
-                            borderRadius: BorderRadius.circular(8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                dragHandle(
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    child: Tooltip(
-                                      message: 'Drag to move',
-                                      child: Icon(Icons.drag_indicator),
-                                    ),
-                                  ),
+                  return Positioned.fill(
+                    child: DraggablePanel(
+                      // iPad-friendly default: dock at the right edge,
+                      // vertically centered, so it doesn't overlap the
+                      // status-bar clock or window controls in the
+                      // top-left corner.
+                      initialAlignment: Alignment.centerRight,
+                      resizable: true,
+                      initialSize: const Size(280, 480),
+                      minSize: const Size(220, 260),
+                      builder: (context, dragHandle) => Material(
+                        elevation: 8,
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        clipBehavior: Clip.antiAlias,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.max,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            dragHandle(
+                              Container(
+                                height: 28,
+                                alignment: Alignment.center,
+                                child: const Tooltip(
+                                  message: 'Drag to move',
+                                  child: Icon(Icons.drag_indicator),
                                 ),
-                                StampPickerPanel(
-                                  controller: controller,
-                                  categories: categories,
-                                  stampImageBuilder: stampImageBuilder,
-                                ),
-                              ],
+                              ),
                             ),
-                          ),
+                            const Divider(height: 1, thickness: 1),
+                            Expanded(
+                              child: StampPickerPanel(
+                                controller: controller,
+                                categories: categories,
+                                stampImageBuilder: stampImageBuilder,
+                              ),
+                            ),
+                          ],
                         ),
-                      );
-                    },
+                      ),
+                    ),
                   );
                 },
               );

@@ -4,15 +4,23 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 /// Vertically-scrollable picker UI rendering one section per
-/// [PdfViewerStampCategory]. Tapping a thumbnail arms the
-/// corresponding stamp via [PdfViewerController.setPendingStamp]; the
-/// armed thumbnail shows a 2 px primary-coloured border so the user can
-/// see what's currently active.
+/// [PdfViewerStampCategory]. Tapping a thumbnail toggles arming for
+/// the corresponding stamp via [PdfViewerController.setPendingStamp]:
+/// tap an unarmed thumbnail to arm it; tap the same thumbnail again to
+/// disarm (so the next page-tap places nothing). The armed thumbnail
+/// shows a 2 px primary-coloured border so the user can see what's
+/// currently active.
 ///
 /// Categories are sorted by `id` ascending; stamps within each category
 /// are sorted by `id` ascending — the picker never mutates the input
 /// lists. Each thumbnail carries a stable `Key('stampThumb:$catId/$stampId')`
 /// for tests to drive.
+///
+/// The panel renders flat (no `Material`/elevation/border-radius of its
+/// own); callers wrap it in whatever container they want. The
+/// scrollable content fills the available constraints, so the picker
+/// works equally well inside a fixed-size box (e.g. a resizable
+/// floating panel) or as a flex child via `Expanded`.
 class StampPickerPanel extends StatelessWidget {
   const StampPickerPanel({
     required this.controller,
@@ -28,30 +36,22 @@ class StampPickerPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sortedCategories = [...categories]..sort((a, b) => a.id.compareTo(b.id));
-    return Material(
-      elevation: 8,
-      color: Theme.of(context).colorScheme.surface,
-      borderRadius: BorderRadius.circular(8),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 320, maxHeight: 480),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(8),
-          child: ValueListenableBuilder<PdfStampDefinition?>(
-            valueListenable: controller.pendingStampListenable,
-            builder: (context, pending, _) => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final category in sortedCategories)
-                  _StampCategorySection(
-                    category: category,
-                    pending: pending,
-                    onTap: controller.setPendingStamp,
-                    stampImageBuilder: stampImageBuilder,
-                  ),
-              ],
-            ),
-          ),
+    return ValueListenableBuilder<PdfStampDefinition?>(
+      valueListenable: controller.pendingStampListenable,
+      builder: (context, pending, _) => SingleChildScrollView(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final category in sortedCategories)
+              _StampCategorySection(
+                category: category,
+                pending: pending,
+                onTap: controller.setPendingStamp,
+                stampImageBuilder: stampImageBuilder,
+              ),
+          ],
         ),
       ),
     );
@@ -93,7 +93,7 @@ class _StampCategorySection extends StatelessWidget {
                   key: Key('stampThumb:${category.id}/${stamp.id}'),
                   stamp: stamp,
                   isPending: identical(pending, stamp),
-                  onTap: () => onTap(stamp),
+                  onTap: () => onTap(identical(pending, stamp) ? null : stamp),
                   stampImageBuilder: stampImageBuilder,
                 ),
             ],
@@ -159,10 +159,37 @@ class _StampThumbnailState extends State<_StampThumbnail> {
             padding: const EdgeInsets.all(4),
             child: bytes == null
                 ? const SizedBox.shrink()
-                : widget.stampImageBuilder(context, bytes, widget.stamp.contentType, const Size(40, 40)),
+                : Center(
+                    // Aspect-fit the builder's displaySize into the
+                    // 40×40 inner area so thumbnails show the stamp
+                    // in its natural proportions (page-level rendering
+                    // keeps using BoxFit.fill so edge-resize stretches
+                    // the image — the library never stretches).
+                    child: widget.stampImageBuilder(
+                      context,
+                      bytes,
+                      widget.stamp.contentType,
+                      _aspectFit(widget.stamp.intrinsicSize, 40),
+                    ),
+                  ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Scales [intrinsic] so its longest side equals [longestSide] while
+/// preserving aspect. Falls back to a square of [longestSide] when the
+/// intrinsic is degenerate (zero or negative).
+Size _aspectFit(Size intrinsic, double longestSide) {
+  if (intrinsic.width <= 0 || intrinsic.height <= 0) {
+    return Size(longestSide, longestSide);
+  }
+  if (intrinsic.width >= intrinsic.height) {
+    final h = longestSide * intrinsic.height / intrinsic.width;
+    return Size(longestSide, h);
+  }
+  final w = longestSide * intrinsic.width / intrinsic.height;
+  return Size(w, longestSide);
 }

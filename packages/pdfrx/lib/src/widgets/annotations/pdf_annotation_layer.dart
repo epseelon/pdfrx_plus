@@ -18,12 +18,17 @@ import 'pdf_stamp_definition.dart';
 /// extend past the page bounds are visually clipped.
 ///
 /// While [PdfAnnotationController.annotationModeListenable] is `true`, a
-/// per-page [GestureDetector] is mounted on top of the painter to capture
+/// per-page input handler is mounted on top of the painter to capture
 /// pan and tap input. The active tool ([PdfAnnotationController.currentToolListenable])
 /// determines whether pan input draws ([PdfAnnotationTool.pen]), erases
 /// ([PdfAnnotationTool.eraser]), or places/manipulates stamps
-/// ([PdfAnnotationTool.stamp]). Page rotation is assumed to be `0°`
-/// (see spec §17).
+/// ([PdfAnnotationTool.stamp]). For the stamp tool the layer uses a raw
+/// [Listener] (rather than a [GestureDetector]) so handle drags don't
+/// have to clear the system pan-slop threshold — important for touch
+/// devices where small fingertip drags otherwise get lost in the
+/// gesture arena.
+///
+/// Page rotation is assumed to be `0°` (see spec §17).
 class PdfAnnotationLayer extends StatefulWidget {
   const PdfAnnotationLayer({
     required this.controller,
@@ -55,18 +60,35 @@ class PdfAnnotationLayer extends StatefulWidget {
 }
 
 // Selection-overlay sizing constants. Handles render at fixed *screen*
-// pixels regardless of zoom.
-const double _kHandleScreenPx = 10.0;
-const double _kHandleHitRadiusPx = 14.0;
-const double _kRotateHandleInsetPx = 6.0;
+// pixels regardless of zoom. Hit radius is bumped well above the visual
+// size so fingertips have a comfortable target on touch screens.
+const double _kHandleScreenPx = 12.0;
+const double _kHandleHitRadiusPx = 22.0;
+// Rotation handle floats above the bbox's top edge so it never hides
+// the stamp content (which used to be a problem when the stamp was
+// small). Sized larger than the resize handles to fit a rotation icon.
+const double _kRotateHandlePx = 24.0;
+const double _kRotateHandleGapPx = 8.0;
+// Delete button floats at the top-right corner of the bbox (offset
+// outward by the same gap as the rotation handle) so it never hides
+// the stamp content.
 const double _kDeleteButtonPx = 24.0;
 const double _kSelectionOutlinePx = 1.5;
 
+/// Movement threshold (in widget pixels) past which a stamp-tool
+/// pointer-down is treated as a drag rather than a tap. Deliberately
+/// looser than the framework's `kPanSlop` (~18 px) so handle drags fire
+/// reliably from a fingertip; the trade-off is that "tap" is committed
+/// only when the finger barely moves between down and up.
+const double _kStampDragSlopPx = 4.0;
+
 class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
-  // Drag bookkeeping captured at pan-start so subsequent updates can be
-  // routed without re-hit-testing.
+  // Drag bookkeeping captured at pointer-down so subsequent updates can
+  // be routed without re-hit-testing.
   PdfStampHandle? _activeHandle;
-  Offset? _panStartLocal;
+  Offset? _pointerDownLocal;
+  PdfStampHandle? _pendingHandle;
+  bool _dragRecognized = false;
   Offset? _stampCenterLocal;
   double? _initialRotationAngle;
   double? _originalStampRotationDeg;
@@ -76,6 +98,35 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   Rect get _pageRect => widget.pageRect;
 
   @override
+  void initState() {
+    super.initState();
+    _registerPageLayout();
+  }
+
+  @override
+  void didUpdateWidget(covariant PdfAnnotationLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller || oldWidget.page.pageNumber != widget.page.pageNumber) {
+      oldWidget.controller.unregisterPageLayout(oldWidget.page.pageNumber - 1);
+    }
+    _registerPageLayout();
+  }
+
+  @override
+  void dispose() {
+    _controller.unregisterPageLayout(_page.pageNumber - 1);
+    super.dispose();
+  }
+
+  void _registerPageLayout() {
+    _controller.registerPageLayout(
+      pageIndex: _page.pageNumber - 1,
+      viewerRect: _pageRect,
+      pageSize: Size(_page.width, _page.height),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<bool>(
       valueListenable: _controller.annotationModeListenable,
@@ -83,7 +134,17 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         return IgnorePointer(
           ignoring: !modeOn,
           child: AnimatedBuilder(
-            animation: Listenable.merge([_controller, _controller.stampDragChangedListenable]),
+            // Selection-driven UI (the overlay + delete button) hangs
+            // off `selectedStampIdListenable`, so it must trigger a
+            // rebuild here. Without it, taps that select/deselect a
+            // stamp would update the controller silently and the user
+            // would only see handles appear after some other state
+            // change happened to bump the merged listenable.
+            animation: Listenable.merge([
+              _controller,
+              _controller.stampDragChangedListenable,
+              _controller.selectedStampIdListenable,
+            ]),
             builder: (context, _) {
               final committed = _controller.strokes
                   .where((s) => s.pageIndex == _page.pageNumber - 1)
@@ -98,6 +159,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
               final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
 
               return Stack(
+                clipBehavior: Clip.none,
                 children: [
                   CustomPaint(
                     painter: InkPainter(
@@ -133,21 +195,38 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                         ),
                       ),
                     ),
-                  if (selectedStamp != null) _buildSelectionOverlay(selectedStamp, scaleX, scaleY),
                   if (modeOn)
                     Positioned.fill(
                       child: ValueListenableBuilder<PdfAnnotationTool>(
                         valueListenable: _controller.currentToolListenable,
-                        builder: (context, tool, _) => GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTapUp: (details) => _onTapUp(tool, details.localPosition),
-                          onPanStart: (details) => _onPanStart(tool, details.localPosition),
-                          onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
-                          onPanEnd: (_) => _onPanEnd(tool),
-                          onPanCancel: () => _onPanCancel(tool),
-                        ),
+                        builder: (context, tool, _) {
+                          if (tool == PdfAnnotationTool.stamp) {
+                            return Listener(
+                              behavior: HitTestBehavior.opaque,
+                              onPointerDown: (e) => _onStampPointerDown(e.localPosition),
+                              onPointerMove: (e) => _onStampPointerMove(e.localPosition),
+                              onPointerUp: (e) => _onStampPointerUp(e.localPosition),
+                              onPointerCancel: (_) => _onStampPointerCancel(),
+                            );
+                          }
+                          return GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onPanStart: (details) => _onPanStart(tool, details.localPosition),
+                            onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
+                            onPanEnd: (_) => _onPanEnd(tool),
+                            onPanCancel: () => _onPanCancel(tool),
+                          );
+                        },
                       ),
                     ),
+                  // Selection overlay is rendered above the input
+                  // handler but is fully pointer-transparent — every
+                  // affordance (resize/rotate handles, delete button)
+                  // is purely visual. Taps and drags fall through to
+                  // the Listener below, which routes them based on
+                  // our own hit-tests in page-local space (so handles
+                  // floating outside the bbox still receive input).
+                  if (selectedStamp != null) _buildSelectionOverlay(selectedStamp, scaleX, scaleY),
                 ],
               );
             },
@@ -187,66 +266,86 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       top: top,
       width: width,
       height: height,
-      child: IgnorePointer(
-        // Affordances are visual only; the gesture detector sitting on
-        // top of the stack handles their hit-tests via PDF-space math.
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // Outline traced just inside the bbox.
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(color: color, width: _kSelectionOutlinePx),
-                ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Outline + resize/rotation handles render visually only —
+          // pointer-transparent so the Listener below catches drags.
+          IgnorePointer(
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: color, width: _kSelectionOutlinePx),
+                      ),
+                    ),
+                  ),
+                  for (final handle in _resizeHandles)
+                    Positioned(
+                      left: _handleX(handle, width) - _kHandleScreenPx / 2,
+                      top: _handleY(handle, height) - _kHandleScreenPx / 2,
+                      width: _kHandleScreenPx,
+                      height: _kHandleScreenPx,
+                      child: Semantics(
+                        label: 'Resize ${_handleLabel(handle)}',
+                        button: true,
+                        child: DecoratedBox(decoration: BoxDecoration(color: color)),
+                      ),
+                    ),
+                  Positioned(
+                    left: width / 2 - _kRotateHandlePx / 2,
+                    top: -(_kRotateHandleGapPx + _kRotateHandlePx),
+                    width: _kRotateHandlePx,
+                    height: _kRotateHandlePx,
+                    child: Semantics(
+                      label: 'Rotate stamp',
+                      button: true,
+                      child: Material(
+                        color: color,
+                        shape: const CircleBorder(),
+                        elevation: 2,
+                        child: Icon(Icons.refresh, size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                      ),
+                    ),
+                  ),
+                  // Delete button. Floats outside the bbox at the
+                  // top-right corner — diagonally offset from the
+                  // top-right resize handle so fingers reaching the
+                  // corner still hit the resize handle. Pointer events
+                  // fall through to the Listener (IgnorePointer wraps
+                  // the whole affordance group); the actual tap-test
+                  // for this button lives in _handleStampTap so the
+                  // tap path is uniform across all the stamp tool's
+                  // affordances.
+                  Positioned(
+                    left: width + _kRotateHandleGapPx,
+                    top: -(_kRotateHandleGapPx + _kDeleteButtonPx),
+                    width: _kDeleteButtonPx,
+                    height: _kDeleteButtonPx,
+                    child: Semantics(
+                      label: 'Delete stamp',
+                      button: true,
+                      child: Material(
+                        color: color,
+                        shape: const CircleBorder(),
+                        elevation: 2,
+                        child: Tooltip(
+                          message: 'Delete stamp',
+                          child: Icon(Icons.delete_outline, size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            // Resize handles at corners + edge midpoints.
-            for (final handle in _resizeHandles)
-              Positioned(
-                left: _handleX(handle, width) - _kHandleScreenPx / 2,
-                top: _handleY(handle, height) - _kHandleScreenPx / 2,
-                width: _kHandleScreenPx,
-                height: _kHandleScreenPx,
-                child: Semantics(
-                  label: 'Resize ${_handleLabel(handle)}',
-                  button: true,
-                  child: DecoratedBox(decoration: BoxDecoration(color: color)),
-                ),
-              ),
-            // Rotation handle (small filled circle inset below the top edge).
-            Positioned(
-              left: width / 2 - _kHandleScreenPx / 2,
-              top: _kRotateHandleInsetPx,
-              width: _kHandleScreenPx,
-              height: _kHandleScreenPx,
-              child: Semantics(
-                label: 'Rotate stamp',
-                button: true,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                ),
-              ),
-            ),
-            // Delete IconButton anchored at the inner top-right.
-            Positioned(
-              right: 2,
-              top: 2,
-              width: _kDeleteButtonPx,
-              height: _kDeleteButtonPx,
-              child: Semantics(
-                label: 'Delete stamp',
-                button: true,
-                child: Material(
-                  color: Theme.of(context).colorScheme.surface,
-                  shape: const CircleBorder(),
-                  elevation: 2,
-                  child: const Icon(Icons.close, size: 16),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -289,29 +388,18 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     _ => height / 2,
   };
 
-  // Hit-test helpers — all in widget-local space.
-
-  /// Returns the topmost selectable stamp (current creator's) whose
-  /// rect contains the local point, or null. Iterates in reverse Z so
-  /// the most recently placed stamp wins overlap resolution.
-  PdfStampAnnotation? _hitTestSelectableStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
-    for (var i = pageStamps.length - 1; i >= 0; i--) {
-      final s = pageStamps[i];
-      if (s.creatorName != _controller.currentCreator) continue;
-      if (_stampLocalRect(s).contains(local)) return s;
-    }
-    return null;
-  }
-
-  /// Returns the first stamp (any creator) whose rect contains the
-  /// local point — used purely to decide that "a stamp is here, fall
-  /// through to placement only if it's foreign-creator".
-  PdfStampAnnotation? _hitTestAnyStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
-    for (var i = pageStamps.length - 1; i >= 0; i--) {
-      final s = pageStamps[i];
-      if (_stampLocalRect(s).contains(local)) return s;
-    }
-    return null;
+  /// Local-coord rect of the floating delete button for [stamp]. Sits
+  /// just outside the bbox at the top-right corner. Used for tap
+  /// hit-testing only — the visual is rendered as a pointer-transparent
+  /// affordance.
+  Rect _stampDeleteButtonRect(PdfStampAnnotation stamp) {
+    final bbox = _stampLocalRect(stamp);
+    return Rect.fromLTWH(
+      bbox.right + _kRotateHandleGapPx,
+      bbox.top - _kRotateHandleGapPx - _kDeleteButtonPx,
+      _kDeleteButtonPx,
+      _kDeleteButtonPx,
+    );
   }
 
   Rect _stampLocalRect(PdfStampAnnotation stamp) {
@@ -325,71 +413,193 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     );
   }
 
-  /// Returns the handle (corner/edge/rotation/body/delete) of [stamp]
-  /// hit by [local], or `null` if no affordance is within hit-radius.
-  /// `body` is returned only when the local point is inside the bbox
-  /// but no other affordance is closer.
-  _StampHitTestResult? _hitTestStampHandles(PdfStampAnnotation stamp, Offset local) {
+  /// Returns the closest handle of [stamp] to [local], or `null` if no
+  /// handle is within hit radius. When [local] falls inside the bbox
+  /// without hitting any handle, returns [PdfStampHandle.body]. Closest
+  /// wins over priority order so e.g. the top-edge midpoint beats the
+  /// rotation handle when the user taps right at the edge.
+  PdfStampHandle? _hitTestStampHandles(PdfStampAnnotation stamp, Offset local) {
     final rect = _stampLocalRect(stamp);
-    // Delete button: top-right of bbox, _kDeleteButtonPx square.
-    final deleteRect = Rect.fromLTWH(
-      rect.right - _kDeleteButtonPx - 2,
-      rect.top + 2,
-      _kDeleteButtonPx,
-      _kDeleteButtonPx,
-    );
-    if (deleteRect.inflate(2).contains(local)) {
-      return _StampHitTestResult.delete();
-    }
-    // Resize handles.
-    for (final h in _resizeHandles) {
-      final hx = rect.left + _handleX(h, rect.width);
-      final hy = rect.top + _handleY(h, rect.height);
-      if ((local - Offset(hx, hy)).distance <= _kHandleHitRadiusPx) {
-        return _StampHitTestResult.handle(h);
+    PdfStampHandle? bestHandle;
+    var bestDistSq = _kHandleHitRadiusPx * _kHandleHitRadiusPx;
+
+    void consider(PdfStampHandle h, Offset pos) {
+      final dx = local.dx - pos.dx;
+      final dy = local.dy - pos.dy;
+      final d2 = dx * dx + dy * dy;
+      if (d2 <= bestDistSq) {
+        bestHandle = h;
+        bestDistSq = d2;
       }
     }
-    // Rotation handle.
-    final rotX = rect.left + rect.width / 2;
-    final rotY = rect.top + _kRotateHandleInsetPx;
-    if ((local - Offset(rotX, rotY)).distance <= _kHandleHitRadiusPx) {
-      return _StampHitTestResult.handle(PdfStampHandle.rotation);
+
+    for (final h in _resizeHandles) {
+      consider(h, Offset(rect.left + _handleX(h, rect.width), rect.top + _handleY(h, rect.height)));
     }
-    // Body fallback.
-    if (rect.contains(local)) return _StampHitTestResult.handle(PdfStampHandle.body);
+    consider(PdfStampHandle.rotation, Offset(rect.center.dx, rect.top - _kRotateHandleGapPx - _kRotateHandlePx / 2));
+
+    if (bestHandle != null) return bestHandle;
+    if (rect.contains(local)) return PdfStampHandle.body;
     return null;
   }
 
-  void _onTapUp(PdfAnnotationTool tool, Offset local) {
-    if (tool != PdfAnnotationTool.stamp) return;
-    final pageStamps = _pageStamps();
-    final selectedId = _controller.selectedStampIdListenable.value;
+  /// Returns the topmost selectable stamp (current creator's) whose
+  /// rect contains [local], or null. Iterates in reverse Z-order so the
+  /// most recently placed stamp wins overlap resolution.
+  PdfStampAnnotation? _hitTestSelectableStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
+    for (var i = pageStamps.length - 1; i >= 0; i--) {
+      final s = pageStamps[i];
+      if (s.creatorName != _controller.currentCreator) continue;
+      if (_stampLocalRect(s).contains(local)) return s;
+    }
+    return null;
+  }
 
-    // Delete-button tap on the selected stamp wins outright.
+  /// Returns the first stamp (any creator) whose rect contains the
+  /// local point — used purely to decide whether to fall through to
+  /// placement (only when the topmost stamp is foreign-creator).
+  PdfStampAnnotation? _hitTestAnyStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
+    for (var i = pageStamps.length - 1; i >= 0; i--) {
+      final s = pageStamps[i];
+      if (_stampLocalRect(s).contains(local)) return s;
+    }
+    return null;
+  }
+
+  // ───────────────────────── Stamp tool: Listener ─────────────────────────
+
+  void _onStampPointerDown(Offset local) {
+    _pointerDownLocal = local;
+    _dragRecognized = false;
+    _pendingHandle = null;
+
+    final selectedId = _controller.selectedStampIdListenable.value;
+    if (selectedId == null) return;
+    final pageStamps = _pageStamps();
+    final selected = _findSelected(pageStamps, selectedId);
+    if (selected == null) return;
+    if (selected.creatorName != _controller.currentCreator) return;
+
+    final hit = _hitTestStampHandles(selected, local);
+    if (hit == null) return;
+    _pendingHandle = hit;
+    if (hit == PdfStampHandle.rotation) {
+      final rect = _stampLocalRect(selected);
+      _stampCenterLocal = rect.center;
+      _initialRotationAngle = math.atan2(local.dy - rect.center.dy, local.dx - rect.center.dx);
+      _originalStampRotationDeg = selected.rotationDeg;
+    }
+  }
+
+  void _onStampPointerMove(Offset local) {
+    final start = _pointerDownLocal;
+    if (start == null) return;
+    final dx = local.dx - start.dx;
+    final dy = local.dy - start.dy;
+    final distSq = dx * dx + dy * dy;
+
+    if (!_dragRecognized) {
+      if (distSq < _kStampDragSlopPx * _kStampDragSlopPx) return;
+      _dragRecognized = true;
+      final pending = _pendingHandle;
+      if (pending == null) {
+        // Pan over empty area (or off the selected stamp): consume
+        // silently so it doesn't fall through to a place/deselect.
+        return;
+      }
+      _activeHandle = pending;
+      _controller.beginStampDrag(pending);
+    }
+
+    final handle = _activeHandle;
+    if (handle == null) return;
+
+    if (handle == PdfStampHandle.rotation) {
+      final center = _stampCenterLocal!;
+      final initial = _initialRotationAngle!;
+      final current = math.atan2(local.dy - center.dy, local.dx - center.dx);
+      // Screen-y grows downward, so a clockwise angular delta in screen
+      // space is a CCW rotation in our PDF-space convention.
+      final deltaRad = -(current - initial);
+      _controller.applyStampRotate(_originalStampRotationDeg! + deltaRad * 180.0 / math.pi);
+      return;
+    }
+
+    if (handle == PdfStampHandle.body) {
+      // Body drag works in viewer-pixel space so cross-page page
+      // reassignment can hand off the stamp to a sibling annotation
+      // layer mid-drag. The Listener is mounted on a Positioned at
+      // pageRect.topLeft, so the local-space delta is identical to a
+      // pure viewer-coord delta.
+      _controller.applyStampMoveViewer(local - start);
+      return;
+    }
+    final cumulativePdf = _toPdfSpace(local) - _toPdfSpace(start);
+    _controller.applyStampResize(cumulativePdf);
+  }
+
+  void _onStampPointerUp(Offset local) {
+    if (_dragRecognized) {
+      _endStampDrag();
+    } else {
+      // No movement crossed the slop — treat as a tap at the down
+      // position so taps don't drift if the finger settles slightly.
+      _handleStampTap(_pointerDownLocal ?? local);
+    }
+    _resetStampPointerState();
+  }
+
+  void _onStampPointerCancel() {
+    if (_dragRecognized) _endStampDrag();
+    _resetStampPointerState();
+  }
+
+  void _resetStampPointerState() {
+    _pointerDownLocal = null;
+    _pendingHandle = null;
+    _dragRecognized = false;
+    _stampCenterLocal = null;
+    _initialRotationAngle = null;
+    _originalStampRotationDeg = null;
+  }
+
+  void _handleStampTap(Offset local) {
+    final pageStamps = _pageStamps();
+    final pending = _controller.pendingStampListenable.value;
+
+    // Delete-button tap on the currently-selected stamp wins over
+    // every other branch — it's the affordance the user explicitly
+    // aimed at and it sits OUTSIDE the bbox, so the body / empty-area
+    // hit-tests would otherwise eat the tap.
+    final selectedId = _controller.selectedStampIdListenable.value;
     if (selectedId != null) {
-      final selected = _findSelected(pageStamps, selectedId);
-      if (selected != null) {
-        final hit = _hitTestStampHandles(selected, local);
-        if (hit != null && hit.isDelete) {
-          _controller.deleteStamp(selected.id);
-          return;
-        }
+      final selectedStamp = _findSelected(pageStamps, selectedId);
+      if (selectedStamp != null && _stampDeleteButtonRect(selectedStamp).contains(local)) {
+        _controller.deleteStamp(selectedStamp.id);
+        return;
       }
     }
 
-    final pending = _controller.pendingStampListenable.value;
-
-    // Selectable stamp under the tap → select.
     final selectable = _hitTestSelectableStampBody(pageStamps, local);
     if (selectable != null) {
       _controller.selectStamp(selectable.id);
-      // Clear pending so subsequent taps don't drop a new stamp.
+      // Repeat-place is only meaningful on empty areas — once the user
+      // commits to a placed stamp, drop the pending so the next tap
+      // doesn't duplicate.
       if (pending != null) _controller.setPendingStamp(null);
       return;
     }
 
-    // Foreign-creator stamp under the tap → fall through to place /
-    // deselect (the spec calls for transparency to the place branch).
+    // Tap on empty area (or over a foreign-creator stamp). Deselection
+    // takes priority over placement: if the user has a stamp selected,
+    // a tap outside that stamp clears the selection first — even when
+    // a library stamp is armed. The next "empty" tap (with no
+    // selection) is the one that drops a new stamp.
+    if (_controller.selectedStampIdListenable.value != null) {
+      _controller.clearStampSelection();
+      return;
+    }
+
     final any = _hitTestAnyStampBody(pageStamps, local);
     final overForeign = any != null && any.creatorName != _controller.currentCreator;
 
@@ -397,10 +607,6 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       unawaited(_placePendingStamp(pending, local));
       return;
     }
-
-    // No pending and tap landed on empty area (or only over foreign
-    // stamps) — clear selection.
-    _controller.clearStampSelection();
   }
 
   List<PdfStampAnnotation> _pageStamps() =>
@@ -410,7 +616,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     try {
       final bytes = await pending.bytesLoader();
       final pdfPoint = _toPdfSpace(local);
-      _controller.placeStamp(
+      final newId = _controller.placeStamp(
         bytes: bytes,
         contentType: pending.contentType,
         pageIndex: _page.pageNumber - 1,
@@ -418,10 +624,15 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         intrinsicSize: pending.intrinsicSize,
         pageSize: Size(_page.width, _page.height),
       );
+      // Auto-select on placement so the user immediately sees the
+      // selection affordances and can adjust the new stamp.
+      if (newId != null) _controller.selectStamp(newId);
     } catch (e, st) {
       debugPrint('stamp placement failed: $e\n$st');
     }
   }
+
+  // ───────────────────────── Other tools: GestureDetector ────────────────
 
   void _onPanStart(PdfAnnotationTool tool, Offset local) {
     switch (tool) {
@@ -452,38 +663,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
-        _onStampPanStart(local);
+        // Handled by the Listener branch.
+        return;
     }
-  }
-
-  void _onStampPanStart(Offset local) {
-    final selectedId = _controller.selectedStampIdListenable.value;
-    if (selectedId == null) return;
-    final pageStamps = _pageStamps();
-    final selected = _findSelected(pageStamps, selectedId);
-    if (selected == null) return;
-    if (selected.creatorName != _controller.currentCreator) return;
-
-    final hit = _hitTestStampHandles(selected, local);
-    if (hit == null) {
-      // Pan landed off the selected stamp — the spec consumes the
-      // gesture as a no-op (no pen draw, no marquee, no deselect).
-      return;
-    }
-    if (hit.isDelete) {
-      // The delete tap is handled in onTapUp; don't begin a drag here.
-      return;
-    }
-    final handle = hit.handle!;
-    if (handle == PdfStampHandle.rotation) {
-      final rect = _stampLocalRect(selected);
-      _stampCenterLocal = rect.center;
-      _initialRotationAngle = math.atan2(local.dy - rect.center.dy, local.dx - rect.center.dx);
-      _originalStampRotationDeg = selected.rotationDeg;
-    }
-    _activeHandle = handle;
-    _panStartLocal = local;
-    _controller.beginStampDrag(handle);
   }
 
   void _onPanUpdate(PdfAnnotationTool tool, Offset local) {
@@ -499,28 +681,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
-        _onStampPanUpdate(local);
-    }
-  }
-
-  void _onStampPanUpdate(Offset local) {
-    final handle = _activeHandle;
-    final start = _panStartLocal;
-    if (handle == null || start == null) return;
-    if (handle == PdfStampHandle.rotation) {
-      final center = _stampCenterLocal!;
-      final initial = _initialRotationAngle!;
-      final current = math.atan2(local.dy - center.dy, local.dx - center.dx);
-      // CCW positive: subtract because screen y grows downward.
-      final deltaRad = -(current - initial);
-      _controller.applyStampRotate(_originalStampRotationDeg! + deltaRad * 180.0 / math.pi);
-      return;
-    }
-    final cumulativePdf = _toPdfSpace(local) - _toPdfSpace(start);
-    if (handle == PdfStampHandle.body) {
-      _controller.applyStampMove(cumulativePdf);
-    } else {
-      _controller.applyStampResize(cumulativePdf);
+        return;
     }
   }
 
@@ -532,7 +693,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
-        _endStampDrag();
+        return;
     }
   }
 
@@ -544,7 +705,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
-        _endStampDrag();
+        return;
     }
   }
 
@@ -552,22 +713,10 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     if (_activeHandle == null) return;
     _controller.endStampDrag();
     _activeHandle = null;
-    _panStartLocal = null;
-    _stampCenterLocal = null;
-    _initialRotationAngle = null;
-    _originalStampRotationDeg = null;
   }
 
   Offset _toPdfSpace(Offset local) =>
       Offset(local.dx * _page.width / _pageRect.width, local.dy * _page.height / _pageRect.height);
-}
-
-class _StampHitTestResult {
-  const _StampHitTestResult.handle(this.handle) : isDelete = false;
-  const _StampHitTestResult.delete() : handle = null, isDelete = true;
-
-  final PdfStampHandle? handle;
-  final bool isDelete;
 }
 
 @visibleForTesting

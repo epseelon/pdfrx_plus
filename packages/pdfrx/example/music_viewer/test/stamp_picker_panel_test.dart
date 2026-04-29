@@ -90,4 +90,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.pendingStampListenable.value, same(flat));
   });
+
+  testWidgets('tapping the armed thumbnail again disarms it (toggle)', (tester) async {
+    final controller = PdfViewerController();
+    final sharp = _def('sharp');
+    await _pumpPanel(
+      tester,
+      controller: controller,
+      categories: [
+        PdfViewerStampCategory(id: 'notes', title: 'Notes', stamps: [sharp]),
+      ],
+    );
+    await tester.pump();
+
+    final thumb = find.byKey(const Key('stampThumb:notes/sharp'));
+
+    await tester.tap(thumb);
+    await tester.pumpAndSettle();
+    expect(controller.pendingStampListenable.value, same(sharp));
+
+    // Second tap on the same (now armed) thumbnail clears the
+    // pending stamp so subsequent page taps place nothing.
+    await tester.tap(thumb);
+    await tester.pumpAndSettle();
+    expect(controller.pendingStampListenable.value, isNull);
+  });
 }
