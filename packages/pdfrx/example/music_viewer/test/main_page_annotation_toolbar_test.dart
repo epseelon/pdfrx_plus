@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_viewer/main_page.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 class _StubHistory {
   final canUndo = ValueNotifier<bool>(false);
@@ -65,5 +66,31 @@ void main() {
     expect(tester.widget<IconButton>(_redoButton()).onPressed, isNotNull);
     await tester.tap(_redoButton());
     expect(history.redoCalls, 1);
+  });
+
+  group('AnnotationToolButtons stamp button visibility', () {
+    Widget stampHarness({required bool stampAvailable}) {
+      final tool = ValueNotifier<PdfAnnotationTool>(PdfAnnotationTool.pen);
+      addTearDown(tool.dispose);
+      return MaterialApp(
+        home: Scaffold(
+          body: AnnotationToolButtons(
+            toolListenable: tool,
+            onSelectTool: (_) {},
+            stampAvailable: stampAvailable,
+          ),
+        ),
+      );
+    }
+
+    testWidgets('absent when stampAvailable is false', (tester) async {
+      await tester.pumpWidget(stampHarness(stampAvailable: false));
+      expect(find.byTooltip('Stamp'), findsNothing);
+    });
+
+    testWidgets('present with tooltip "Stamp" when stampAvailable is true', (tester) async {
+      await tester.pumpWidget(stampHarness(stampAvailable: true));
+      expect(find.byTooltip('Stamp'), findsOneWidget);
+    });
   });
 }

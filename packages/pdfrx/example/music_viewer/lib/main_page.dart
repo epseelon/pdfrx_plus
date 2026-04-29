@@ -1,6 +1,5 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
@@ -8,6 +7,8 @@ import 'annotation_storage.dart';
 import 'draggable_panel.dart';
 import 'horizontal_facing_pages_layout.dart';
 import 'stamp_image_builder.dart';
+import 'stamp_library.dart';
+import 'stamp_picker_panel.dart';
 
 class MainPage extends StatefulWidget {
   const MainPage({required this.pdfFilePaths, super.key});
@@ -420,7 +421,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addObserver(this);
     _fileIndex = 0;
     _openFile(index: _fileIndex);
-    _loadStampCategoriesPlaceholder();
+    _loadStamps();
   }
 
   @override
@@ -433,45 +434,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     super.dispose();
   }
 
-  // Phase 1 hand-built stamp library: 3 SVG stamps from the music notation
-  // assets. Phase 3 replaces this with a full asset-manifest scanner.
-  Future<void> _loadStampCategoriesPlaceholder() async {
-    Future<Uint8List> load(String path) async {
-      final bd = await rootBundle.load(path);
-      return bd.buffer.asUint8List();
+  Future<void> _loadStamps() async {
+    try {
+      final categories = await loadStampLibrary();
+      if (!mounted) return;
+      setState(() => _stampCategories = categories);
+    } catch (e, st) {
+      debugPrint('loadStampLibrary failed: $e\n$st');
     }
-
-    final categories = [
-      PdfViewerStampCategory(
-        id: 'notes',
-        title: 'Notes',
-        stamps: [
-          PdfStampDefinition(
-            id: 'sharp',
-            name: 'Sharp',
-            contentType: 'image/svg+xml',
-            bytesLoader: () => load('assets/music_stamps/notes/sharp.svg'),
-            intrinsicSize: const Size(24, 24),
-          ),
-          PdfStampDefinition(
-            id: 'flat',
-            name: 'Flat',
-            contentType: 'image/svg+xml',
-            bytesLoader: () => load('assets/music_stamps/notes/flat.svg'),
-            intrinsicSize: const Size(24, 24),
-          ),
-          PdfStampDefinition(
-            id: 'natural',
-            name: 'Natural',
-            contentType: 'image/svg+xml',
-            bytesLoader: () => load('assets/music_stamps/notes/natural.svg'),
-            intrinsicSize: const Size(24, 24),
-          ),
-        ],
-      ),
-    ];
-    if (!mounted) return;
-    setState(() => _stampCategories = categories);
   }
 
   @override
@@ -810,10 +780,30 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       return Positioned.fill(
                         child: DraggablePanel(
                           initialOffset: const Offset(16, 16),
-                          builder: (context, dragHandle) => _StampPickerPlaceholder(
-                            dragHandle: dragHandle,
-                            categories: categories,
-                            controller: controller,
+                          builder: (context, dragHandle) => Material(
+                            elevation: 8,
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                dragHandle(
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    child: Tooltip(
+                                      message: 'Drag to move',
+                                      child: Icon(Icons.drag_indicator),
+                                    ),
+                                  ),
+                                ),
+                                StampPickerPanel(
+                                  controller: controller,
+                                  categories: categories,
+                                  stampImageBuilder: stampImageBuilder,
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       );
@@ -842,135 +832,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             },
           );
         },
-      ),
-    );
-  }
-}
-
-class _StampPickerPlaceholder extends StatelessWidget {
-  const _StampPickerPlaceholder({
-    required this.dragHandle,
-    required this.categories,
-    required this.controller,
-  });
-
-  final DragHandleBuilder dragHandle;
-  final List<PdfViewerStampCategory> categories;
-  final PdfViewerController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final sortedCats = [...categories]..sort((a, b) => a.id.compareTo(b.id));
-    return Material(
-      elevation: 8,
-      color: Theme.of(context).colorScheme.surface,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            dragHandle(
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: Tooltip(message: 'Drag to move', child: Icon(Icons.drag_indicator)),
-              ),
-            ),
-            for (final cat in sortedCats) _StampCategoryRow(category: cat, controller: controller),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StampCategoryRow extends StatelessWidget {
-  const _StampCategoryRow({required this.category, required this.controller});
-
-  final PdfViewerStampCategory category;
-  final PdfViewerController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final sortedStamps = [...category.stamps]..sort((a, b) => a.id.compareTo(b.id));
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(category.title, style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 4),
-          ValueListenableBuilder<PdfStampDefinition?>(
-            valueListenable: controller.pendingStampListenable,
-            builder: (context, pending, _) => Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final stamp in sortedStamps)
-                  _StampThumbnail(
-                    key: Key('stampThumb:${category.id}/${stamp.id}'),
-                    stamp: stamp,
-                    isPending: identical(pending, stamp),
-                    onTap: () => controller.setPendingStamp(stamp),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StampThumbnail extends StatefulWidget {
-  const _StampThumbnail({required this.stamp, required this.isPending, required this.onTap, super.key});
-
-  final PdfStampDefinition stamp;
-  final bool isPending;
-  final VoidCallback onTap;
-
-  @override
-  State<_StampThumbnail> createState() => _StampThumbnailState();
-}
-
-class _StampThumbnailState extends State<_StampThumbnail> {
-  Uint8List? _bytes;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final result = await widget.stamp.bytesLoader();
-      if (!mounted) return;
-      setState(() => _bytes = result);
-    } catch (e, st) {
-      debugPrint('stamp thumbnail load failed: $e\n$st');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bytes = _bytes;
-    final border = widget.isPending ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2) : null;
-    return Tooltip(
-      message: widget.stamp.name,
-      child: InkWell(
-        onTap: widget.onTap,
-        child: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(border: border, borderRadius: BorderRadius.circular(4)),
-          padding: const EdgeInsets.all(4),
-          child: bytes == null
-              ? const SizedBox.shrink()
-              : stampImageBuilder(context, bytes, widget.stamp.contentType, const Size(40, 40)),
-        ),
       ),
     );
   }
