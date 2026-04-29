@@ -2281,6 +2281,7 @@ class _PdfViewerState extends State<PdfViewer>
               page: page,
               pageRect: rectExternal,
               highlighterOpacity: widget.params.highlighterOpacity,
+              stampImageBuilder: widget.params.stampImageBuilder,
             ),
           ),
         );
@@ -5454,6 +5455,27 @@ class PdfViewerController extends ValueListenable<Matrix4> {
 
   /// Listenable carrying the active eraser radius.
   ValueListenable<double> get annotationEraserRadiusListenable => _annotationController.eraserRadiusListenable;
+
+  /// Arm a [PdfStampDefinition] for placement (or pass `null` to disarm).
+  /// While the active tool is [PdfAnnotationTool.stamp] and a stamp is
+  /// pending, a tap on a page places it at the tapped point.
+  void setPendingStamp(PdfStampDefinition? stamp) => _annotationController.setPendingStamp(stamp);
+
+  /// Listenable carrying the currently-armed stamp library entry, or
+  /// `null` when no stamp is pending.
+  ValueListenable<PdfStampDefinition?> get pendingStampListenable => _annotationController.pendingStampListenable;
+
+  /// Listenable carrying the `id` of the currently-selected placed
+  /// stamp, or `null` when none is selected.
+  ValueListenable<String?> get selectedStampIdListenable => _annotationController.selectedStampIdListenable;
+
+  /// Clear the current stamp selection.
+  void clearStampSelection() => _annotationController.clearStampSelection();
+
+  /// Remove the placed stamp identified by [id]. No-op when the stamp
+  /// does not exist or is owned by a different creator (foreign-creator
+  /// protection). Pushes one undo snapshot.
+  void deleteStamp(String id) => _annotationController.deleteStamp(id);
 
   /// Exit annotation drawing mode.
   ///

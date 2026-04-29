@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
 import 'pdf_annotation_controller.dart';
 import 'pdf_ink_annotation.dart';
+import 'pdf_stamp_annotation.dart';
+import 'pdf_stamp_definition.dart';
 
-/// Internal per-page widget that paints all [PdfInkAnnotation]s anchored
-/// to [page]. Mounted by `PdfViewer` for every visible page.
+/// Internal per-page widget that paints all [PdfInkAnnotation]s and
+/// [PdfStampAnnotation]s anchored to [page]. Mounted by `PdfViewer` for
+/// every visible page.
 ///
 /// Coordinates are converted from PDF point space (top-left origin) to
 /// widget pixels using the page's current display rect. Strokes that
@@ -13,9 +18,10 @@ import 'pdf_ink_annotation.dart';
 ///
 /// While [PdfAnnotationController.annotationModeListenable] is `true`, a
 /// per-page [GestureDetector] is mounted on top of the painter to capture
-/// pan input. The active tool ([PdfAnnotationController.currentToolListenable])
-/// determines whether pan input draws ([PdfAnnotationTool.pen]) or erases
-/// ([PdfAnnotationTool.eraser]). Page rotation is assumed to be `0°`
+/// pan and tap input. The active tool ([PdfAnnotationController.currentToolListenable])
+/// determines whether pan input draws ([PdfAnnotationTool.pen]), erases
+/// ([PdfAnnotationTool.eraser]), or places stamps
+/// ([PdfAnnotationTool.stamp]). Page rotation is assumed to be `0°`
 /// (see spec §17).
 class PdfAnnotationLayer extends StatelessWidget {
   const PdfAnnotationLayer({
@@ -23,6 +29,7 @@ class PdfAnnotationLayer extends StatelessWidget {
     required this.page,
     required this.pageRect,
     required this.highlighterOpacity,
+    this.stampImageBuilder,
     super.key,
   });
 
@@ -36,6 +43,11 @@ class PdfAnnotationLayer extends StatelessWidget {
   /// `[0.0, 1.0]` at use time, so out-of-range values from the params
   /// are silently coerced rather than rejected.
   final double highlighterOpacity;
+
+  /// Optional builder for stamp widgets. When `null` (the host did not
+  /// supply a renderer), stamps still render as a transparent
+  /// placeholder; placement gestures still work for testing.
+  final PdfStampImageBuilder? stampImageBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -53,6 +65,11 @@ class PdfAnnotationLayer extends StatelessWidget {
               final committed = controller.strokes
                   .where((s) => s.pageIndex == page.pageNumber - 1)
                   .toList(growable: false);
+              final pageStamps = controller.stamps
+                  .where((s) => s.pageIndex == page.pageNumber - 1)
+                  .toList(growable: false);
+              final scaleX = pageRect.width / page.width;
+              final scaleY = pageRect.height / page.height;
               return Stack(
                 children: [
                   CustomPaint(
@@ -73,12 +90,29 @@ class PdfAnnotationLayer extends StatelessWidget {
                     ),
                     size: pageRect.size,
                   ),
+                  for (final stamp in pageStamps)
+                    Positioned(
+                      key: Key('stamp:${stamp.id}'),
+                      left: stamp.rectInPdfSpace.left * scaleX,
+                      top: stamp.rectInPdfSpace.top * scaleY,
+                      width: stamp.rectInPdfSpace.width * scaleX,
+                      height: stamp.rectInPdfSpace.height * scaleY,
+                      child: Transform.rotate(
+                        angle: -stamp.rotationDeg * 3.141592653589793 / 180.0,
+                        child: SizedBox(
+                          width: stamp.rectInPdfSpace.width * scaleX,
+                          height: stamp.rectInPdfSpace.height * scaleY,
+                          child: _buildStampChild(context, stamp, scaleX, scaleY),
+                        ),
+                      ),
+                    ),
                   if (modeOn)
                     Positioned.fill(
                       child: ValueListenableBuilder<PdfAnnotationTool>(
                         valueListenable: controller.currentToolListenable,
                         builder: (context, tool, _) => GestureDetector(
                           behavior: HitTestBehavior.opaque,
+                          onTapUp: (details) => _onTapUp(tool, details.localPosition),
                           onPanStart: (details) => _onPanStart(tool, details.localPosition),
                           onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
                           onPanEnd: (_) => _onPanEnd(tool),
@@ -93,6 +127,44 @@ class PdfAnnotationLayer extends StatelessWidget {
         );
       },
     );
+  }
+
+  Widget _buildStampChild(BuildContext context, PdfStampAnnotation stamp, double scaleX, double scaleY) {
+    final builder = stampImageBuilder;
+    final attachment = controller.attachments[stamp.attachmentSha256];
+    if (builder == null || attachment == null) {
+      return const SizedBox.shrink();
+    }
+    final displaySize = Size(stamp.rectInPdfSpace.width * scaleX, stamp.rectInPdfSpace.height * scaleY);
+    return builder(context, attachment.bytes, stamp.contentType, displaySize);
+  }
+
+  void _onTapUp(PdfAnnotationTool tool, Offset local) {
+    if (tool != PdfAnnotationTool.stamp) return;
+    final pending = controller.pendingStampListenable.value;
+    if (pending == null) {
+      // Phase 2 will handle selection; for Phase 1 a tap with no pending
+      // is a consumed no-op.
+      return;
+    }
+    unawaited(_placePendingStamp(pending, local));
+  }
+
+  Future<void> _placePendingStamp(PdfStampDefinition pending, Offset local) async {
+    try {
+      final bytes = await pending.bytesLoader();
+      final pdfPoint = _toPdfSpace(local);
+      controller.placeStamp(
+        bytes: bytes,
+        contentType: pending.contentType,
+        pageIndex: page.pageNumber - 1,
+        pdfPoint: pdfPoint,
+        intrinsicSize: pending.intrinsicSize,
+        pageSize: Size(page.width, page.height),
+      );
+    } catch (e, st) {
+      debugPrint('stamp placement failed: $e\n$st');
+    }
   }
 
   void _onPanStart(PdfAnnotationTool tool, Offset local) {
@@ -125,6 +197,11 @@ class PdfAnnotationLayer extends StatelessWidget {
           pdfPoint: _toPdfSpace(local),
           radiusInPdfPoints: controller.eraserRadius,
         );
+      case PdfAnnotationTool.stamp:
+        // Phase 2 wires drag-to-move/resize/rotate. For Phase 1 a pan in
+        // stamp mode is a consumed no-op so the gesture detector does
+        // not draw a stroke.
+        return;
     }
   }
 
@@ -140,6 +217,8 @@ class PdfAnnotationLayer extends StatelessWidget {
           pdfPoint: _toPdfSpace(local),
           radiusInPdfPoints: controller.eraserRadius,
         );
+      case PdfAnnotationTool.stamp:
+        return;
     }
   }
 
@@ -150,6 +229,8 @@ class PdfAnnotationLayer extends StatelessWidget {
         controller.commitStroke();
       case PdfAnnotationTool.eraser:
         controller.endErase();
+      case PdfAnnotationTool.stamp:
+        return;
     }
   }
 
@@ -160,6 +241,8 @@ class PdfAnnotationLayer extends StatelessWidget {
         controller.cancelStroke();
       case PdfAnnotationTool.eraser:
         controller.endErase();
+      case PdfAnnotationTool.stamp:
+        return;
     }
   }
 

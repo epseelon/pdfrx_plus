@@ -1,11 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
 import 'annotation_storage.dart';
 import 'draggable_panel.dart';
 import 'horizontal_facing_pages_layout.dart';
+import 'stamp_image_builder.dart';
 
 class MainPage extends StatefulWidget {
   const MainPage({required this.pdfFilePaths, super.key});
@@ -59,14 +61,22 @@ class AnnotationUndoRedoButtons extends StatelessWidget {
   }
 }
 
-/// Pen / Highlighter / Eraser tool selector row. Stable selectors are the
-/// tooltip strings `'Pen'`, `'Highlighter'`, and `'Eraser'` — keep these
-/// in sync with the toolbar widget test.
+/// Pen / Highlighter / Eraser / (optional) Stamp tool selector row.
+/// Stable selectors are the tooltip strings `'Pen'`, `'Highlighter'`,
+/// `'Eraser'`, and `'Stamp'` — keep these in sync with the toolbar
+/// widget test. The Stamp button is rendered only when [stampAvailable]
+/// is `true` (i.e. the host configured a non-empty stamp library).
 class AnnotationToolButtons extends StatelessWidget {
-  const AnnotationToolButtons({required this.toolListenable, required this.onSelectTool, super.key});
+  const AnnotationToolButtons({
+    required this.toolListenable,
+    required this.onSelectTool,
+    this.stampAvailable = false,
+    super.key,
+  });
 
   final ValueListenable<PdfAnnotationTool> toolListenable;
   final ValueChanged<PdfAnnotationTool> onSelectTool;
+  final bool stampAvailable;
 
   @override
   Widget build(BuildContext context) {
@@ -96,6 +106,14 @@ class AnnotationToolButtons extends StatelessWidget {
             icon: const Icon(Icons.cleaning_services_outlined),
             onPressed: () => onSelectTool(PdfAnnotationTool.eraser),
           ),
+          if (stampAvailable)
+            IconButton.filledTonal(
+              tooltip: 'Stamp',
+              isSelected: tool == PdfAnnotationTool.stamp,
+              selectedIcon: const Icon(Icons.bookmark),
+              icon: const Icon(Icons.bookmark_border),
+              onPressed: () => onSelectTool(PdfAnnotationTool.stamp),
+            ),
         ],
       ),
     );
@@ -115,10 +133,24 @@ class AnnotationToolButtons extends StatelessWidget {
 ///
 /// Tooltips are stable selectors used by the toolbar widget test.
 class AnnotationStylePopups extends StatelessWidget {
-  const AnnotationStylePopups({required this.controller, required this.tool, super.key});
+  const AnnotationStylePopups({
+    required this.controller,
+    required this.tool,
+    this.onToggleStampPicker,
+    this.stampPickerOpenListenable,
+    super.key,
+  });
 
   final PdfViewerController controller;
   final PdfAnnotationTool tool;
+
+  /// Toggles the stamp picker visibility. Required when [tool] can be
+  /// [PdfAnnotationTool.stamp]; ignored otherwise.
+  final VoidCallback? onToggleStampPicker;
+
+  /// Optional listenable surfacing the picker's open state so the
+  /// toggle button can show its selected variant.
+  final ValueListenable<bool>? stampPickerOpenListenable;
 
   @override
   Widget build(BuildContext context) {
@@ -134,6 +166,25 @@ class AnnotationStylePopups extends StatelessWidget {
         );
       case PdfAnnotationTool.eraser:
         return _ThicknessPopup(controller: controller, tool: tool);
+      case PdfAnnotationTool.stamp:
+        final pickerListenable = stampPickerOpenListenable;
+        if (pickerListenable == null) {
+          return IconButton(
+            tooltip: 'Stamp library',
+            icon: const Icon(Icons.image_outlined),
+            onPressed: onToggleStampPicker,
+          );
+        }
+        return ValueListenableBuilder<bool>(
+          valueListenable: pickerListenable,
+          builder: (context, open, _) => IconButton.filledTonal(
+            tooltip: 'Stamp library',
+            isSelected: open,
+            selectedIcon: const Icon(Icons.image),
+            icon: const Icon(Icons.image_outlined),
+            onPressed: onToggleStampPicker,
+          ),
+        );
     }
   }
 }
@@ -276,6 +327,12 @@ class _ThicknessPopup extends StatelessWidget {
             ),
           ),
         );
+      case PdfAnnotationTool.stamp:
+        // The stamp tool's style row is rendered by AnnotationStylePopups
+        // directly (a single picker-toggle button). _ThicknessPopup is
+        // not invoked for stamps; return an empty widget defensively in
+        // case a host wires it incorrectly.
+        return const SizedBox.shrink();
       case PdfAnnotationTool.eraser:
         final borderColor = Theme.of(context).colorScheme.onSurface;
         return ValueListenableBuilder<double>(
@@ -341,12 +398,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final documentRef = ValueNotifier<PdfDocumentRef?>(null);
   final controller = PdfViewerController();
   final _currentPage = ValueNotifier<int>(1);
+  final _pickerOpen = ValueNotifier<bool>(true);
 
   final String _creatorName = 'alice';
 
   int? _fileIndex;
   bool _twoPageMode = true;
   bool _gotoLastOnReady = false;
+
+  List<PdfViewerStampCategory>? _stampCategories;
 
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
@@ -360,6 +420,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addObserver(this);
     _fileIndex = 0;
     _openFile(index: _fileIndex);
+    _loadStampCategoriesPlaceholder();
   }
 
   @override
@@ -368,7 +429,49 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.removeObserver(this);
     documentRef.dispose();
     _currentPage.dispose();
+    _pickerOpen.dispose();
     super.dispose();
+  }
+
+  // Phase 1 hand-built stamp library: 3 SVG stamps from the music notation
+  // assets. Phase 3 replaces this with a full asset-manifest scanner.
+  Future<void> _loadStampCategoriesPlaceholder() async {
+    Future<Uint8List> load(String path) async {
+      final bd = await rootBundle.load(path);
+      return bd.buffer.asUint8List();
+    }
+
+    final categories = [
+      PdfViewerStampCategory(
+        id: 'notes',
+        title: 'Notes',
+        stamps: [
+          PdfStampDefinition(
+            id: 'sharp',
+            name: 'Sharp',
+            contentType: 'image/svg+xml',
+            bytesLoader: () => load('assets/music_stamps/notes/sharp.svg'),
+            intrinsicSize: const Size(24, 24),
+          ),
+          PdfStampDefinition(
+            id: 'flat',
+            name: 'Flat',
+            contentType: 'image/svg+xml',
+            bytesLoader: () => load('assets/music_stamps/notes/flat.svg'),
+            intrinsicSize: const Size(24, 24),
+          ),
+          PdfStampDefinition(
+            id: 'natural',
+            name: 'Natural',
+            contentType: 'image/svg+xml',
+            bytesLoader: () => load('assets/music_stamps/notes/natural.svg'),
+            intrinsicSize: const Size(24, 24),
+          ),
+        ],
+      ),
+    ];
+    if (!mounted) return;
+    setState(() => _stampCategories = categories);
   }
 
   @override
@@ -409,9 +512,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             AnnotationToolButtons(
               toolListenable: controller.annotationToolListenable,
               onSelectTool: controller.setAnnotationTool,
+              stampAvailable: (_stampCategories?.isNotEmpty ?? false),
             ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
-            AnnotationStylePopups(controller: controller, tool: tool),
+            AnnotationStylePopups(
+              controller: controller,
+              tool: tool,
+              onToggleStampPicker: () => _pickerOpen.value = !_pickerOpen.value,
+              stampPickerOpenListenable: _pickerOpen,
+            ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             AnnotationUndoRedoButtons(
               canUndoListenable: controller.canUndoListenable,
@@ -571,6 +680,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   maxScale: 8,
                   scrollPhysics: PdfViewerParams.getScrollPhysics(context),
                   pageTransition: PageTransition.discrete,
+                  stampCategories: _stampCategories,
+                  stampImageBuilder: _stampCategories == null ? null : stampImageBuilder,
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
                   onGeneralTap: (context, controller, details) {
@@ -681,6 +792,37 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               );
             },
           ),
+          ValueListenableBuilder<bool>(
+            valueListenable: controller.annotationModeListenable,
+            builder: (context, annotating, _) {
+              final categories = _stampCategories;
+              if (!annotating || categories == null || categories.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return ValueListenableBuilder<PdfAnnotationTool>(
+                valueListenable: controller.annotationToolListenable,
+                builder: (context, tool, _) {
+                  if (tool != PdfAnnotationTool.stamp) return const SizedBox.shrink();
+                  return ValueListenableBuilder<bool>(
+                    valueListenable: _pickerOpen,
+                    builder: (context, open, _) {
+                      if (!open) return const SizedBox.shrink();
+                      return Positioned.fill(
+                        child: DraggablePanel(
+                          initialOffset: const Offset(16, 16),
+                          builder: (context, dragHandle) => _StampPickerPlaceholder(
+                            dragHandle: dragHandle,
+                            categories: categories,
+                            controller: controller,
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              );
+            },
+          ),
         ],
       ),
       floatingActionButton: ValueListenableBuilder<bool>(
@@ -700,6 +842,135 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             },
           );
         },
+      ),
+    );
+  }
+}
+
+class _StampPickerPlaceholder extends StatelessWidget {
+  const _StampPickerPlaceholder({
+    required this.dragHandle,
+    required this.categories,
+    required this.controller,
+  });
+
+  final DragHandleBuilder dragHandle;
+  final List<PdfViewerStampCategory> categories;
+  final PdfViewerController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final sortedCats = [...categories]..sort((a, b) => a.id.compareTo(b.id));
+    return Material(
+      elevation: 8,
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            dragHandle(
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Tooltip(message: 'Drag to move', child: Icon(Icons.drag_indicator)),
+              ),
+            ),
+            for (final cat in sortedCats) _StampCategoryRow(category: cat, controller: controller),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StampCategoryRow extends StatelessWidget {
+  const _StampCategoryRow({required this.category, required this.controller});
+
+  final PdfViewerStampCategory category;
+  final PdfViewerController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final sortedStamps = [...category.stamps]..sort((a, b) => a.id.compareTo(b.id));
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(category.title, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          ValueListenableBuilder<PdfStampDefinition?>(
+            valueListenable: controller.pendingStampListenable,
+            builder: (context, pending, _) => Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final stamp in sortedStamps)
+                  _StampThumbnail(
+                    key: Key('stampThumb:${category.id}/${stamp.id}'),
+                    stamp: stamp,
+                    isPending: identical(pending, stamp),
+                    onTap: () => controller.setPendingStamp(stamp),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StampThumbnail extends StatefulWidget {
+  const _StampThumbnail({required this.stamp, required this.isPending, required this.onTap, super.key});
+
+  final PdfStampDefinition stamp;
+  final bool isPending;
+  final VoidCallback onTap;
+
+  @override
+  State<_StampThumbnail> createState() => _StampThumbnailState();
+}
+
+class _StampThumbnailState extends State<_StampThumbnail> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final result = await widget.stamp.bytesLoader();
+      if (!mounted) return;
+      setState(() => _bytes = result);
+    } catch (e, st) {
+      debugPrint('stamp thumbnail load failed: $e\n$st');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = _bytes;
+    final border = widget.isPending ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2) : null;
+    return Tooltip(
+      message: widget.stamp.name,
+      child: InkWell(
+        onTap: widget.onTap,
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(border: border, borderRadius: BorderRadius.circular(4)),
+          padding: const EdgeInsets.all(4),
+          child: bytes == null
+              ? const SizedBox.shrink()
+              : stampImageBuilder(context, bytes, widget.stamp.contentType, const Size(40, 40)),
+        ),
       ),
     );
   }

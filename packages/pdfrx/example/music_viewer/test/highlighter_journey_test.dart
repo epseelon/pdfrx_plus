@@ -5,6 +5,8 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_controller.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_layer.dart';
 
+import '_test_helpers/fake_pdf_page.dart';
+
 /// Journey test: tap Highlighter via the toolbar's stable tooltip
 /// selector, drag a programmatic pan on the [PdfAnnotationLayer] in
 /// isolation, exit mode, capture the `onAnnotationsChanged` JSON,
@@ -25,7 +27,7 @@ void main() {
     final controller = PdfAnnotationController();
     addTearDown(controller.dispose);
 
-    final page = _FakePdfPage(pageNumber: 1, width: pageSize.width, height: pageSize.height);
+    final page = FakePdfPage(pageNumber: 1, width: pageSize.width, height: pageSize.height);
 
     String? capturedJson;
     Future<void> onAnnotationsChanged(String json) async => capturedJson = json;
@@ -94,22 +96,4 @@ void main() {
     expect(stroke.opacity, closeTo(highlighterOpacity, 1e-9));
     expect(stroke.lineWidth, controller.highlighterWidth);
   });
-}
-
-/// Minimal [PdfPage] stub for the annotation layer test. The layer only
-/// reads [pageNumber], [width], and [height] from the page, so the rest
-/// can throw via `noSuchMethod`.
-class _FakePdfPage implements PdfPage {
-  _FakePdfPage({required this.pageNumber, required this.width, required this.height});
-
-  @override
-  final int pageNumber;
-  @override
-  final double width;
-  @override
-  final double height;
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnimplementedError('Fake PdfPage does not implement ${invocation.memberName}');
 }

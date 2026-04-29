@@ -1,10 +1,13 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'instant_json.dart';
 import 'pdf_ink_annotation.dart';
+import 'pdf_stamp_annotation.dart';
+import 'pdf_stamp_definition.dart';
 
 /// Active annotation tool while [PdfAnnotationController.annotationModeListenable]
 /// is `true`.
@@ -20,6 +23,11 @@ enum PdfAnnotationTool {
 
   /// Pan input erases existing strokes that the current session owns.
   eraser,
+
+  /// Tap input places the controller's current pending
+  /// [PdfStampDefinition] onto the page (or selects/manipulates an
+  /// existing stamp owned by the current creator).
+  stamp,
 }
 
 /// Internal annotation state for a `PdfViewer`. Owns the list of strokes,
@@ -28,18 +36,27 @@ enum PdfAnnotationTool {
 /// Not exported from `pdfrx.dart`. Public access goes through
 /// `PdfViewerController`'s annotation methods.
 class PdfAnnotationController extends ChangeNotifier {
+  /// Default longest-side size (PDF points) used by [placeStamp] when
+  /// the caller does not override the placement bbox.
+  static const double _kDefaultStampLongestSidePts = 36.0;
+
   final List<PdfInkAnnotation> _strokes = [];
+  final List<PdfStampAnnotation> _stamps = [];
+  final Map<String, PdfStampAttachment> _attachments = {};
   final ValueNotifier<bool> _modeListenable = ValueNotifier<bool>(false);
   final ValueNotifier<int> _inFlightTick = ValueNotifier<int>(0);
   final ValueNotifier<int> _eraserCursorTick = ValueNotifier<int>(0);
+  final ValueNotifier<int> _stampDragTick = ValueNotifier<int>(0);
   final ValueNotifier<PdfAnnotationTool> _toolListenable = ValueNotifier<PdfAnnotationTool>(PdfAnnotationTool.pen);
   final ValueNotifier<Color> _strokeColor = ValueNotifier<Color>(const Color(0xFFFF3B30));
   final ValueNotifier<double> _strokeWidth = ValueNotifier<double>(2.0);
   final ValueNotifier<Color> _highlighterColor = ValueNotifier<Color>(const Color(0xFFFFFF00));
   final ValueNotifier<double> _highlighterWidth = ValueNotifier<double>(12.0);
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
-  final List<List<PdfInkAnnotation>> _undoStack = [];
-  final List<List<PdfInkAnnotation>> _redoStack = [];
+  final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
+  final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
+  final List<_AnnotationSnapshot> _undoStack = [];
+  final List<_AnnotationSnapshot> _redoStack = [];
   final ValueNotifier<bool> _canUndo = ValueNotifier<bool>(false);
   final ValueNotifier<bool> _canRedo = ValueNotifier<bool>(false);
 
@@ -131,6 +148,28 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Current eraser radius value. See [eraserRadiusListenable] for change
   /// notifications.
   double get eraserRadius => _eraserRadius.value;
+
+  /// The stamp library entry currently armed for placement, or `null`
+  /// when no stamp is pending. While non-null and the active tool is
+  /// [PdfAnnotationTool.stamp], a tap on a page places this stamp.
+  ValueListenable<PdfStampDefinition?> get pendingStampListenable => _pendingStamp;
+
+  /// `id` of the currently-selected placed stamp, or `null` when no
+  /// stamp is selected. Only stamps owned by the current creator can
+  /// become selected.
+  ValueListenable<String?> get selectedStampIdListenable => _selectedStampId;
+
+  /// Bumps on every stamp drag delta (move/resize/rotate) so the layer
+  /// can repaint affordances live without flushing the main listener.
+  Listenable get stampDragChangedListenable => _stampDragTick;
+
+  /// Read-only view of the placed stamp annotations.
+  List<PdfStampAnnotation> get stamps => List.unmodifiable(_stamps);
+
+  /// Read-only view of the attachment store (sha256 → bytes + content
+  /// type). Bytes referenced by at least one stamp are emitted under
+  /// the document's `attachments` map at export time.
+  Map<String, PdfStampAttachment> get attachments => Map.unmodifiable(_attachments);
 
   /// `true` while the undo stack has at least one snapshot. Wire to
   /// disabled-state UI; calling [undo] when this is `false` is a no-op.
@@ -256,10 +295,45 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Remove all strokes and notify listeners.
+  /// Replace strokes, stamps, and attachments in a single update.
+  /// History is cleared, listeners notified once.
+  void setAllWithStamps({
+    required List<PdfInkAnnotation> strokes,
+    required List<PdfStampAnnotation> stamps,
+    required Map<String, PdfStampAttachment> attachments,
+  }) {
+    _strokes
+      ..clear()
+      ..addAll(strokes);
+    _stamps
+      ..clear()
+      ..addAll(stamps);
+    _attachments
+      ..clear()
+      ..addAll(attachments);
+    if (_selectedStampId.value != null) _selectedStampId.value = null;
+    _undoStack.clear();
+    _redoStack.clear();
+    _refreshHistoryListenables();
+    notifyListeners();
+  }
+
+  /// Remove all strokes, stamps, attachments, selection, and pending
+  /// stamp (the last reset matches the spec's `clearAnnotations`
+  /// contract). No-op when everything is already empty / null.
   void clear() {
-    if (_strokes.isEmpty) return;
+    final hadStrokes = _strokes.isNotEmpty;
+    final hadStamps = _stamps.isNotEmpty;
+    final hadAttachments = _attachments.isNotEmpty;
+    final hadSelection = _selectedStampId.value != null;
+    final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
+    if (!hadStrokes && !hadStamps && !hadAttachments && !hadSelection && !hadHistory) {
+      return;
+    }
     _strokes.clear();
+    _stamps.clear();
+    _attachments.clear();
+    if (hadSelection) _selectedStampId.value = null;
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
@@ -271,30 +345,36 @@ class PdfAnnotationController extends ChangeNotifier {
   /// [pageCount] bounds-checks `pageIndex` entries; out-of-range entries
   /// are silently skipped. The controller's current [strokeColor] and
   /// [strokeWidth] are used as fallback defaults when an imported entry
-  /// is missing those fields.
+  /// is missing those fields. Stamps and attachments embedded in the
+  /// document are imported as well.
   void importJson(String json, {required int pageCount}) {
-    final decoded = decodeInstantJson(
+    final decoded = decodeInstantJsonFull(
       json,
       pageCount: pageCount,
       defaultColor: _strokeColor.value,
       defaultLineWidth: _strokeWidth.value,
     );
-    setAll(decoded);
+    setAllWithStamps(strokes: decoded.strokes, stamps: decoded.stamps, attachments: decoded.attachments);
   }
 
-  /// Serialize all strokes as an Instant JSON document.
-  String exportJson() => encodeInstantJson(_strokes);
+  /// Serialize all strokes (and stamps + attachments, if any) as an
+  /// Instant JSON document.
+  String exportJson() => encodeInstantJson(_strokes, stamps: _stamps, attachments: _attachments);
 
   String _exportJsonForCreator(String? creator) {
-    if (creator == null) return encodeInstantJson(_strokes);
-    final mine = _strokes.where((s) => s.creatorName == creator).toList(growable: false);
-    return encodeInstantJson(mine);
+    if (creator == null) return encodeInstantJson(_strokes, stamps: _stamps, attachments: _attachments);
+    final mineStrokes = _strokes.where((s) => s.creatorName == creator).toList(growable: false);
+    final mineStamps = _stamps.where((s) => s.creatorName == creator).toList(growable: false);
+    return encodeInstantJson(mineStrokes, stamps: mineStamps, attachments: _attachments);
   }
 
-  /// Switch the active tool. No-op if [tool] is already active.
+  /// Switch the active tool. No-op if [tool] is already active. Clears
+  /// any current stamp selection and pending stamp on tool change.
   void setTool(PdfAnnotationTool tool) {
     if (_toolListenable.value == tool) return;
     _toolListenable.value = tool;
+    if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_pendingStamp.value != null) _pendingStamp.value = null;
   }
 
   /// Begin a new in-flight stroke anchored to [pageIndex] starting at
@@ -373,36 +453,32 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Pop the most recent undo snapshot and restore it as the current
-  /// stroke list. The displaced state is pushed onto the redo stack so
-  /// it can be restored by [redo].
+  /// Pop the most recent undo snapshot and restore the captured strokes,
+  /// stamps, and attachments. The displaced state is pushed onto the
+  /// redo stack so it can be restored by [redo].
   ///
   /// No-op when [canUndoListenable] is `false` — does not throw, does
   /// not notify listeners.
   void undo() {
     if (_undoStack.isEmpty) return;
-    _redoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    _redoStack.add(_currentSnapshot());
     final snapshot = _undoStack.removeLast();
-    _strokes
-      ..clear()
-      ..addAll(snapshot);
+    _restoreSnapshot(snapshot);
     _refreshHistoryListenables();
     notifyListeners();
   }
 
-  /// Pop the most recent redo snapshot and restore it as the current
-  /// stroke list. The displaced state is pushed onto the undo stack so
-  /// it can be restored by [undo].
+  /// Pop the most recent redo snapshot and restore the captured strokes,
+  /// stamps, and attachments. The displaced state is pushed onto the
+  /// undo stack so it can be restored by [undo].
   ///
   /// No-op when [canRedoListenable] is `false` — does not throw, does
   /// not notify listeners.
   void redo() {
     if (_redoStack.isEmpty) return;
-    _undoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    _undoStack.add(_currentSnapshot());
     final snapshot = _redoStack.removeLast();
-    _strokes
-      ..clear()
-      ..addAll(snapshot);
+    _restoreSnapshot(snapshot);
     _refreshHistoryListenables();
     notifyListeners();
   }
@@ -543,10 +619,36 @@ class PdfAnnotationController extends ChangeNotifier {
 
   bool _ownsStroke(PdfInkAnnotation s) => s.creatorName == _currentCreator;
 
+  bool _ownsStamp(PdfStampAnnotation s) => s.creatorName == _currentCreator;
+
   void _pushUndoSnapshot() {
-    _undoStack.add(List<PdfInkAnnotation>.unmodifiable(_strokes));
+    _undoStack.add(_currentSnapshot());
     _redoStack.clear();
     _refreshHistoryListenables();
+  }
+
+  _AnnotationSnapshot _currentSnapshot() {
+    return _AnnotationSnapshot(
+      strokes: List<PdfInkAnnotation>.unmodifiable(_strokes),
+      stamps: List<PdfStampAnnotation>.unmodifiable(_stamps),
+      attachments: Map<String, PdfStampAttachment>.unmodifiable(_attachments),
+    );
+  }
+
+  void _restoreSnapshot(_AnnotationSnapshot snapshot) {
+    _strokes
+      ..clear()
+      ..addAll(snapshot.strokes);
+    _stamps
+      ..clear()
+      ..addAll(snapshot.stamps);
+    _attachments
+      ..clear()
+      ..addAll(snapshot.attachments);
+    final selectedId = _selectedStampId.value;
+    if (selectedId != null && !_stamps.any((s) => s.id == selectedId)) {
+      _selectedStampId.value = null;
+    }
   }
 
   void _refreshHistoryListenables() {
@@ -554,6 +656,119 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_canUndo.value != canUndo) _canUndo.value = canUndo;
     final canRedo = _redoStack.isNotEmpty;
     if (_canRedo.value != canRedo) _canRedo.value = canRedo;
+  }
+
+  /// Arm a [PdfStampDefinition] for placement. Pass `null` to disarm.
+  /// Setting a pending stamp clears any current stamp selection so the
+  /// next page tap drops a new stamp instead of moving the selection.
+  /// Idempotent — re-arming the same stamp does not fire listeners.
+  void setPendingStamp(PdfStampDefinition? stamp) {
+    if (_pendingStamp.value == stamp) return;
+    _pendingStamp.value = stamp;
+    if (stamp != null && _selectedStampId.value != null) {
+      _selectedStampId.value = null;
+    }
+  }
+
+  /// Clear the current stamp selection. Idempotent — no-op when nothing
+  /// is selected.
+  void clearStampSelection() {
+    if (_selectedStampId.value == null) return;
+    _selectedStampId.value = null;
+  }
+
+  /// Internal — set the selected stamp by id. Foreign-creator stamps
+  /// cannot become selected (no-op). Idempotent.
+  void selectStamp(String? id) {
+    if (id == null) {
+      clearStampSelection();
+      return;
+    }
+    if (_selectedStampId.value == id) return;
+    final stamp = _stampById(id);
+    if (stamp == null || !_ownsStamp(stamp)) return;
+    _selectedStampId.value = id;
+  }
+
+  PdfStampAnnotation? _stampById(String id) {
+    for (final s in _stamps) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
+  /// Place a stamp at [pdfPoint] on [pageIndex] with the given raw
+  /// [bytes] and [contentType], sized so its longest side equals the
+  /// default placement size and its aspect matches [intrinsicSize].
+  /// Pushes one undo snapshot. The bytes are deduped via SHA-256: two
+  /// stamps with identical bytes share a single attachment entry.
+  ///
+  /// [clock] / [idGenerator] are testability seams. They default to
+  /// `DateTime.now().toUtc()` and a 24-character random hex generator.
+  ///
+  /// Synchronous failures (e.g. pathological arguments) are caught and
+  /// logged via [debugPrint]; no partial state is leaked.
+  void placeStamp({
+    required Uint8List bytes,
+    required String contentType,
+    required int pageIndex,
+    required Offset pdfPoint,
+    required Size intrinsicSize,
+    required Size pageSize,
+    DateTime Function()? clock,
+    String Function()? idGenerator,
+  }) {
+    try {
+      final aspect = _aspectFit(intrinsicSize, _kDefaultStampLongestSidePts);
+      var rect = Rect.fromCenter(center: pdfPoint, width: aspect.width, height: aspect.height);
+      rect = _clampRectInsidePage(rect, pageSize);
+
+      final hash = sha256.convert(bytes).toString();
+      final now = (clock ?? _defaultClock)();
+      final id = (idGenerator ?? _defaultIdGenerator)();
+
+      // Dedupe attachment bytes.
+      _attachments.putIfAbsent(hash, () => PdfStampAttachment(bytes: bytes, contentType: contentType));
+
+      _pushUndoSnapshot();
+      _stamps.add(
+        PdfStampAnnotation(
+          id: id,
+          pageIndex: pageIndex,
+          rectInPdfSpace: rect,
+          rotationDeg: 0,
+          attachmentSha256: hash,
+          contentType: contentType,
+          createdAt: now,
+          updatedAt: now,
+          creatorName: _currentCreator,
+        ),
+      );
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('placeStamp failed: $e\n$st');
+    }
+  }
+
+  /// Remove the stamp identified by [id] from the document. No-op when
+  /// the stamp does not exist or its `creatorName` differs from the
+  /// current creator (foreign-creator protection). The associated
+  /// attachment is dropped only when no other stamp still references
+  /// the same SHA-256.
+  void deleteStamp(String id) {
+    final stamp = _stampById(id);
+    if (stamp == null) return;
+    if (!_ownsStamp(stamp)) return;
+    _pushUndoSnapshot();
+    _stamps.removeWhere((s) => s.id == id);
+    final stillReferenced = _stamps.any((s) => s.attachmentSha256 == stamp.attachmentSha256);
+    if (!stillReferenced) {
+      _attachments.remove(stamp.attachmentSha256);
+    }
+    if (_selectedStampId.value == id) {
+      _selectedStampId.value = null;
+    }
+    notifyListeners();
   }
 
   /// In-flight strokes (only the start page's; max one) for layer
@@ -582,16 +797,70 @@ class PdfAnnotationController extends ChangeNotifier {
     _modeListenable.dispose();
     _inFlightTick.dispose();
     _eraserCursorTick.dispose();
+    _stampDragTick.dispose();
     _toolListenable.dispose();
     _strokeColor.dispose();
     _strokeWidth.dispose();
     _highlighterColor.dispose();
     _highlighterWidth.dispose();
     _eraserRadius.dispose();
+    _pendingStamp.dispose();
+    _selectedStampId.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
     super.dispose();
   }
+}
+
+DateTime _defaultClock() => DateTime.now().toUtc();
+
+final math.Random _idRng = math.Random();
+
+String _defaultIdGenerator() {
+  final buf = StringBuffer();
+  for (var i = 0; i < 24; i++) {
+    buf.write(_idRng.nextInt(16).toRadixString(16));
+  }
+  return buf.toString();
+}
+
+Size _aspectFit(Size intrinsic, double longestSide) {
+  if (intrinsic.width <= 0 || intrinsic.height <= 0) {
+    return Size(longestSide, longestSide);
+  }
+  if (intrinsic.width >= intrinsic.height) {
+    final h = longestSide * intrinsic.height / intrinsic.width;
+    return Size(longestSide, h);
+  }
+  final w = longestSide * intrinsic.width / intrinsic.height;
+  return Size(w, longestSide);
+}
+
+Rect _clampRectInsidePage(Rect rect, Size pageSize) {
+  // Shift (don't shrink) so the bbox stays in [0, page) on both axes.
+  // If the rect is wider/taller than the page, leave it as-is on that
+  // axis (no shrink).
+  var left = rect.left;
+  var top = rect.top;
+  if (rect.width <= pageSize.width) {
+    if (left < 0) left = 0;
+    final maxLeft = pageSize.width - rect.width;
+    if (left > maxLeft) left = maxLeft;
+  }
+  if (rect.height <= pageSize.height) {
+    if (top < 0) top = 0;
+    final maxTop = pageSize.height - rect.height;
+    if (top > maxTop) top = maxTop;
+  }
+  return Rect.fromLTWH(left, top, rect.width, rect.height);
+}
+
+class _AnnotationSnapshot {
+  const _AnnotationSnapshot({required this.strokes, required this.stamps, required this.attachments});
+
+  final List<PdfInkAnnotation> strokes;
+  final List<PdfStampAnnotation> stamps;
+  final Map<String, PdfStampAttachment> attachments;
 }
 
 bool _segmentsCloseOrIntersect(Offset a1, Offset a2, Offset b1, Offset b2, double radius) {

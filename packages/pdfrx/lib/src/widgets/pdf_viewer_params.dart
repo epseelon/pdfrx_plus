@@ -76,6 +76,8 @@ class PdfViewerParams {
     this.forceReload = false,
     this.onAnnotationsChanged,
     this.highlighterOpacity = 0.35,
+    this.stampCategories,
+    this.stampImageBuilder,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -85,6 +87,11 @@ class PdfViewerParams {
          'useAlternativeFitScaleAsMinScale is deprecated and forces FitMode.fit behavior, '
          'making the fitMode parameter ($fitMode) ineffective. '
          'Remove the useAlternativeFitScaleAsMinScale parameter to use fitMode as intended.',
+       ),
+       assert(
+         stampImageBuilder != null || stampCategories == null,
+         'stampImageBuilder must be supplied when stampCategories is non-null. '
+         'Pass stampCategories: null (or omit it) to disable the stamp tool.',
        );
 
   /// Margin around the page.
@@ -111,6 +118,23 @@ class PdfViewerParams {
   /// `PdfViewer` with new params; already-committed strokes retain
   /// their original opacity, only newly-drawn strokes see the change.
   final double highlighterOpacity;
+
+  /// Stamp library available to the user while
+  /// [PdfAnnotationTool.stamp] is active. `null` and an empty list are
+  /// equivalent — both disable the stamp tool entirely (no Stamp button
+  /// is rendered, no picker panel appears).
+  ///
+  /// Stamps are picker shortcuts only: when placed, their raw bytes are
+  /// embedded into the saved Instant JSON document as a SHA-256-keyed
+  /// attachment. Adding/removing/renaming items in the host's stamp
+  /// library never breaks past documents.
+  final List<PdfViewerStampCategory>? stampCategories;
+
+  /// Renderer for stamp images. Required when [stampCategories] is
+  /// non-empty (asserted at construction). Receives the raw bytes,
+  /// declared MIME type, and the exact display size in widget pixels;
+  /// must respect the requested size (no intrinsic sizing).
+  final PdfStampImageBuilder? stampImageBuilder;
 
   /// Function to customize the layout of the pages.
   ///
@@ -780,6 +804,8 @@ class PdfViewerParams {
         other.behaviorControlParams == behaviorControlParams &&
         other.forceReload == forceReload &&
         other.highlighterOpacity == highlighterOpacity &&
+        other.stampCategories == stampCategories &&
+        other.stampImageBuilder == stampImageBuilder &&
         other.scrollPhysics == scrollPhysics;
   }
 
@@ -842,6 +868,8 @@ class PdfViewerParams {
         behaviorControlParams.hashCode ^
         forceReload.hashCode ^
         highlighterOpacity.hashCode ^
+        stampCategories.hashCode ^
+        stampImageBuilder.hashCode ^
         scrollPhysics.hashCode;
   }
 }
