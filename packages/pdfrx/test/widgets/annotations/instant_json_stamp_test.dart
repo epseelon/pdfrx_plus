@@ -20,11 +20,11 @@ PdfInkAnnotation _stroke({int pageIndex = 0, List<Offset> points = const [Offset
     );
 
 PdfStampAnnotation _stamp({
+  required String hash,
   String id = 'stamp-1',
   int pageIndex = 0,
   Rect rect = const Rect.fromLTWH(10, 10, 24, 24),
   double rotationDeg = 0,
-  required String hash,
   String contentType = 'image/svg+xml',
   String? creatorName,
 }) => PdfStampAnnotation(

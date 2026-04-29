@@ -67,27 +67,28 @@ Add `PdfAnnotationTool.stamp` to pdfrx + wire stamp library/picker into music_vi
 
 - **Goal**: tap-to-select, drag to move, drag handles to resize, drag rotation handle to rotate, tap delete IconButton to remove. Foreign-creator stamps non-selectable. Undo/redo across mixed ink+stamp ops.
 - **Tasks (pdfrx)**:
-  - [ ] `pdf_annotation_controller.dart` — internal mutators: `_moveSelectedStamp(Offset deltaPdf)`, `_resizeSelectedStamp(_Handle, Offset deltaPdf)`, `_rotateSelectedStamp(double degrees)`. Each pushes one undo snapshot at drag-start (via a new `beginStampDrag()` / `endStampDrag()` API) and ticks `_stampDragTick` on each delta for live repaint. `endStampDrag` is the commit boundary.
-  - [ ] `pdf_annotation_controller.dart` — `setPendingStamp` clears selection; tool-change clears selection AND pending.
-  - [ ] `pdf_annotation_layer.dart` — per-page selection-overlay sublayer (renders only when selected stamp's `pageIndex` matches): 1.5 px outline traced inside bbox, 8 small filled square handles (corners + edge midpoints, ~10 logical px, screen-fixed via `Transform.scale` against `pageRect/page.width`), rotation handle (small circle inset ~6 logical px below top edge, centered), delete `IconButton(Icons.close, ...)` anchored at inner top-right of bbox. ALL inside the bbox. **Define magic sizes as private `static const`s** on the layer file: `_kHandleScreenPx = 10.0`, `_kHandleHitRadiusPx = 14.0`, `_kMinStampSizePts = 8.0`, `_kRotateHandleInsetPx = 6.0`, `_kDeleteButtonPx = 24.0`, `_kSelectionOutlinePx = 1.5`. **Wrap each affordance in `Semantics`** for screen reader support: corner/edge handles → `Semantics(label: 'Resize <position>', button: true)` (positions: top-left, top, top-right, right, bottom-right, bottom, bottom-left, left); rotation handle → `Semantics(label: 'Rotate stamp', button: true)`; delete button → `Semantics(label: 'Delete stamp', button: true)` (in addition to the IconButton's tooltip).
-  - [ ] `pdf_annotation_layer.dart` — extend GestureDetector dispatch:
-    - `onTapUp(stamp tool)`: hit-test stamps in reverse-Z order; foreign-creator stamps invisible to hit-test → fall through to pending-place / deselect branches.
-    - `onPanStart(stamp tool)`: hit-test handles of *selected* stamp first → `beginStampDrag(handle)`; else hit-test selected stamp's body → `beginStampDrag(body)`; else consume + ignore.
-    - `onPanUpdate`: route to controller's `_move/_resize/_rotateSelectedStamp` per active handle.
+  - [x] `pdf_annotation_controller.dart` — added public `PdfStampHandle` enum (corners/edges/body/rotation), private `_StampDragState`, and the `beginStampDrag`/`applyStampMove`/`applyStampResize`/`applyStampRotate`/`endStampDrag` API. Snapshot is pushed once at `beginStampDrag`; subsequent updates reconstruct from the captured original rect/rotation; `_stampDragTick` ticks every update for live repaint; `endStampDrag` is the commit boundary. (Plan called these "internal" — surfaced as public methods because the layer lives in a sibling file and shares no library-private scope.) Min-size constant exposed publicly as `kMinStampSizePts = 8.0` so widget tests can assert against it.
+  - [x] `pdf_annotation_controller.dart` — `setPendingStamp` clears selection (Phase 1); `setTool` clears both selection and pending stamp (Phase 1).
+  - [x] `pdf_annotation_layer.dart` — promoted to `StatefulWidget` to track per-drag state. Selection-overlay sublayer renders only when the selected stamp's `pageIndex` matches: 1.5 px outline, 8 filled square handles at corners + edge midpoints (~10 logical px, screen-fixed via Positioned offsets), small filled circle rotation handle inset ~6 px below the top edge, and a delete `Material+Icon(Icons.close)` button at the inner top-right (~24 logical px). All affordances stay inside the bbox and are wrapped in `Semantics` (`Resize <position>`, `Rotate stamp`, `Delete stamp`) for screen-reader support. Sizing constants live as file-level `_k...Px` constants on the layer file.
+  - [x] `pdf_annotation_layer.dart` — extended GestureDetector dispatch:
+    - `onTapUp(stamp tool)`: hit-tests selectable stamps in reverse-Z order, falls through foreign-creator stamps to the place/deselect branch; tap on the selected stamp's delete affordance routes to `deleteStamp`.
+    - `onPanStart(stamp tool)`: hit-tests selected-stamp handles first (corner/edge/rotation/body), else consumes the gesture as a no-op.
+    - `onPanUpdate`: routes to `applyStampMove` / `applyStampResize` / `applyStampRotate` based on the captured active handle.
     - `onPanEnd`/`onPanCancel`: `endStampDrag()`.
-  - [ ] `pdf_annotation_layer.dart` — handle hit-test radius: ~14 logical px to make small handles fingertip-friendly. Coordinate convert to PDF-space using `_toPdfSpace`.
+  - [x] `pdf_annotation_layer.dart` — handle hit-test radius is `_kHandleHitRadiusPx = 14.0` logical px (fingertip-friendly). Coordinates convert to PDF-space via `_toPdfSpace` for cumulative move/resize deltas; rotation uses absolute angle math centered on the bbox.
 - **TDD**:
-  - [ ] TDD: tap on selectable stamp → `selectedStampIdListenable.value == that stamp's id`. Tap empty page area while selected → selection cleared. Tap outside while pending+empty → pending cleared.
-  - [ ] TDD: tap on foreign-creator stamp → selection unchanged; subsequent tap on empty → pending → place.
-  - [ ] TDD: drag selected stamp body → `rectInPdfSpace.topLeft` shifts by drag delta; one undo entry; `undo()` restores prior position.
-  - [ ] TDD: drag corner handle → bbox grows/shrinks per axis; min 8 pt clamped; one undo entry per drag.
-  - [ ] TDD: drag rotation handle → `rotationDeg` updates by `atan2` delta; one undo entry per drag.
-  - [ ] TDD: `deleteStamp(ownId)` removes from `_stamps`; `deleteStamp(foreignId)` is a no-op (returns silently); attachments map keeps bytes referenced by other stamps; drops bytes when reference count → 0.
-  - [ ] TDD: rotation normalization — `encodeInstantJson` writes `rotation` snapped to nearest cardinal AND `pdfrx:rotation` mod 360. `decode` prefers `pdfrx:rotation` when present.
-  - [ ] TDD: undo across mixed ink+stamp ops — interleave stroke + stamp place + stamp move; `undo()`/`redo()` walks back/forward in committed order.
+  - [x] TDD: tap on selectable stamp → `selectedStampIdListenable.value == that stamp's id`; tap on empty area clears selection; tap on foreign-creator stamp does not select.
+  - [x] TDD: tap on foreign-creator stamp → selection unchanged.
+  - [x] TDD: drag body → rect shifts by cumulative delta; one undo entry; `undo()` restores.
+  - [x] TDD: drag corner handle → bbox grows/shrinks per axis; min 8 pt clamped; one undo entry.
+  - [x] TDD: drag rotation handle → `rotationDeg` updates absolutely; one undo entry per drag.
+  - [x] TDD: `deleteStamp(ownId)` removes; `deleteStamp(foreignId)` is no-op; attachments dropped only when reference count hits zero.
+  - [x] TDD: rotation normalization — `encodeInstantJson` writes snapped `rotation` + free `pdfrx:rotation`; decode prefers `pdfrx:rotation`. (Covered by Phase 1 instant_json_stamp_test cases.)
+  - [x] TDD: undo across mixed ink+stamp ops walks back/forward in committed order. (Covered in pdf_annotation_controller_stamp_test.)
 - **Widget tests (music_viewer)**:
-  - [ ] `packages/pdfrx/example/music_viewer/test/stamp_foreign_creator_test.dart` — controller w/ alice's + bob's stamps, current creator = alice; tap on bob's bbox does NOT select; `deleteStamp(bobId)` no-op; `deleteStamp(aliceId)` removes.
-- **Verify**: `dart analyze` && `flutter test` (in `packages/pdfrx` and `packages/pdfrx/example/music_viewer`). Manual smoke: place 2 stamps, drag-move, drag-resize, drag-rotate, tap-delete, undo/redo (including across ink), exit mode, restart → state preserved.
+  - [x] `packages/pdfrx/example/music_viewer/test/stamp_foreign_creator_test.dart` — alice + bob stamps, alice cannot delete or select bob's; her own delete succeeds.
+  - [x] `packages/pdfrx/example/music_viewer/test/stamp_layer_selection_test.dart` (new) — exercises the layer's gesture pipeline: tap on selectable stamp selects, tap empty clears, foreign-creator tap does not select.
+- **Verify**: `flutter analyze` clean of new issues; `flutter test` green except the pre-existing pdfium-download-required `pdf_viewer_test.dart: PdfViewer.uri` (network sandbox limitation). Manual smoke deferred to Phase 3 once the picker panel lands.
 
 ### Phase 3 — Asset library scanner, picker panel, journey test
 

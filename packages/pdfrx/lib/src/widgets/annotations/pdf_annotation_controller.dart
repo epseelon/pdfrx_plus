@@ -30,6 +30,45 @@ enum PdfAnnotationTool {
   stamp,
 }
 
+/// Active drag affordance on the currently-selected stamp. The annotation
+/// layer captures one of these at pan-start and uses it to dispatch
+/// subsequent updates to the corresponding controller mutator.
+enum PdfStampHandle {
+  /// Drag the stamp body to translate it.
+  body,
+
+  /// Drag the rotation handle (small circle inset below the top edge).
+  rotation,
+
+  /// Resize from the top-left corner.
+  topLeft,
+
+  /// Resize from the top edge midpoint (vertical-only).
+  top,
+
+  /// Resize from the top-right corner.
+  topRight,
+
+  /// Resize from the right edge midpoint (horizontal-only).
+  right,
+
+  /// Resize from the bottom-right corner.
+  bottomRight,
+
+  /// Resize from the bottom edge midpoint (vertical-only).
+  bottom,
+
+  /// Resize from the bottom-left corner.
+  bottomLeft,
+
+  /// Resize from the left edge midpoint (horizontal-only).
+  left,
+}
+
+/// Minimum stamp width/height (PDF points) clamped during resize so the
+/// affordances stay tappable.
+const double kMinStampSizePts = 8.0;
+
 /// Internal annotation state for a `PdfViewer`. Owns the list of strokes,
 /// the annotation-mode flag, and the in-flight stroke buffer.
 ///
@@ -64,6 +103,7 @@ class PdfAnnotationController extends ChangeNotifier {
   _InFlightStroke? _inFlight;
   Offset? _eraserPrevPoint;
   int? _eraserPrevPage;
+  _StampDragState? _stampDragState;
 
   /// Bumps on every [appendPoint] so the live-drawing layer can repaint
   /// without rebuilding the committed-strokes painter.
@@ -771,6 +811,116 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Begin a stamp drag (move/resize/rotate). Pushes one undo snapshot
+  /// at the start of the drag and captures the original rect + rotation
+  /// of the currently-selected stamp so subsequent
+  /// [applyStampMove] / [applyStampResize] / [applyStampRotate] calls can
+  /// reconstruct the new state from a cumulative delta.
+  ///
+  /// No-op when no stamp is selected, the selected stamp is owned by a
+  /// different creator (foreign-creator protection), or a drag is
+  /// already in progress.
+  void beginStampDrag(PdfStampHandle handle) {
+    if (_stampDragState != null) return;
+    final id = _selectedStampId.value;
+    if (id == null) return;
+    final stamp = _stampById(id);
+    if (stamp == null || !_ownsStamp(stamp)) return;
+    _pushUndoSnapshot();
+    _stampDragState = _StampDragState(
+      stampId: id,
+      handle: handle,
+      originalRect: stamp.rectInPdfSpace,
+      originalRotation: stamp.rotationDeg,
+    );
+  }
+
+  /// End the in-progress stamp drag (commit boundary). Safe to call when
+  /// no drag is in progress.
+  void endStampDrag() {
+    if (_stampDragState == null) return;
+    _stampDragState = null;
+  }
+
+  /// Translate the selected stamp by [cumulativeDeltaPdf] from the
+  /// position captured at [beginStampDrag]. Bumps [stampDragChangedListenable].
+  void applyStampMove(Offset cumulativeDeltaPdf) {
+    final state = _stampDragState;
+    if (state == null) return;
+    if (state.handle != PdfStampHandle.body) return;
+    final newRect = state.originalRect.shift(cumulativeDeltaPdf);
+    _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
+    _stampDragTick.value++;
+  }
+
+  /// Resize the selected stamp's bbox by applying [cumulativeDeltaPdf]
+  /// to the corner/edge captured at [beginStampDrag]. Clamps each axis
+  /// to [kMinStampSizePts]. Bumps [stampDragChangedListenable].
+  void applyStampResize(Offset cumulativeDeltaPdf) {
+    final state = _stampDragState;
+    if (state == null) return;
+    final handle = state.handle;
+    if (handle == PdfStampHandle.body || handle == PdfStampHandle.rotation) return;
+
+    final orig = state.originalRect;
+    var left = orig.left;
+    var top = orig.top;
+    var right = orig.right;
+    var bottom = orig.bottom;
+
+    final dx = cumulativeDeltaPdf.dx;
+    final dy = cumulativeDeltaPdf.dy;
+
+    final movesLeft =
+        handle == PdfStampHandle.topLeft || handle == PdfStampHandle.left || handle == PdfStampHandle.bottomLeft;
+    final movesRight =
+        handle == PdfStampHandle.topRight || handle == PdfStampHandle.right || handle == PdfStampHandle.bottomRight;
+    final movesTop =
+        handle == PdfStampHandle.topLeft || handle == PdfStampHandle.top || handle == PdfStampHandle.topRight;
+    final movesBottom =
+        handle == PdfStampHandle.bottomLeft || handle == PdfStampHandle.bottom || handle == PdfStampHandle.bottomRight;
+
+    if (movesLeft) {
+      left = orig.left + dx;
+      if (right - left < kMinStampSizePts) left = right - kMinStampSizePts;
+    }
+    if (movesRight) {
+      right = orig.right + dx;
+      if (right - left < kMinStampSizePts) right = left + kMinStampSizePts;
+    }
+    if (movesTop) {
+      top = orig.top + dy;
+      if (bottom - top < kMinStampSizePts) top = bottom - kMinStampSizePts;
+    }
+    if (movesBottom) {
+      bottom = orig.bottom + dy;
+      if (bottom - top < kMinStampSizePts) bottom = top + kMinStampSizePts;
+    }
+
+    final newRect = Rect.fromLTRB(left, top, right, bottom);
+    _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
+    _stampDragTick.value++;
+  }
+
+  /// Set the selected stamp's rotation to [absoluteAngleDeg] (degrees,
+  /// CCW). Caller is responsible for atan2 of (cursor − centroid) etc.
+  /// Bumps [stampDragChangedListenable].
+  void applyStampRotate(double absoluteAngleDeg) {
+    final state = _stampDragState;
+    if (state == null) return;
+    if (state.handle != PdfStampHandle.rotation) return;
+    _replaceSelectedStamp((s) => s.copyWith(rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()));
+    _stampDragTick.value++;
+  }
+
+  void _replaceSelectedStamp(PdfStampAnnotation Function(PdfStampAnnotation) update) {
+    final id = _selectedStampId.value;
+    if (id == null) return;
+    final idx = _stamps.indexWhere((s) => s.id == id);
+    if (idx < 0) return;
+    _stamps[idx] = update(_stamps[idx]);
+  }
+
   /// In-flight strokes (only the start page's; max one) for layer
   /// rendering during the live drag.
   Iterable<PdfInkAnnotation> inFlightStrokesFor(int pageIndex) {
@@ -861,6 +1011,20 @@ class _AnnotationSnapshot {
   final List<PdfInkAnnotation> strokes;
   final List<PdfStampAnnotation> stamps;
   final Map<String, PdfStampAttachment> attachments;
+}
+
+class _StampDragState {
+  _StampDragState({
+    required this.stampId,
+    required this.handle,
+    required this.originalRect,
+    required this.originalRotation,
+  });
+
+  final String stampId;
+  final PdfStampHandle handle;
+  final Rect originalRect;
+  final double originalRotation;
 }
 
 bool _segmentsCloseOrIntersect(Offset a1, Offset a2, Offset b1, Offset b2, double radius) {
