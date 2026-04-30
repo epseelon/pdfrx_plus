@@ -2282,6 +2282,7 @@ class _PdfViewerState extends State<PdfViewer>
               pageRect: rectExternal,
               highlighterOpacity: widget.params.highlighterOpacity,
               stampImageBuilder: widget.params.stampImageBuilder,
+              selectedStampInterfaceColor: widget.params.selectedStampInterfaceColor,
             ),
           ),
         );

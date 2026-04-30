@@ -78,6 +78,7 @@ class PdfViewerParams {
     this.highlighterOpacity = 0.35,
     this.stampCategories,
     this.stampImageBuilder,
+    this.selectedStampInterfaceColor,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -135,6 +136,11 @@ class PdfViewerParams {
   /// declared MIME type, and the exact display size in widget pixels;
   /// must respect the requested size (no intrinsic sizing).
   final PdfStampImageBuilder? stampImageBuilder;
+
+  /// Color of the selection outline, resize handles, rotation handle,
+  /// and delete button rendered around the currently selected stamp.
+  /// When `null`, falls back to `Theme.of(context).colorScheme.primary`.
+  final Color? selectedStampInterfaceColor;
 
   /// Function to customize the layout of the pages.
   ///
@@ -806,6 +812,7 @@ class PdfViewerParams {
         other.highlighterOpacity == highlighterOpacity &&
         other.stampCategories == stampCategories &&
         other.stampImageBuilder == stampImageBuilder &&
+        other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.scrollPhysics == scrollPhysics;
   }
 
@@ -870,6 +877,7 @@ class PdfViewerParams {
         highlighterOpacity.hashCode ^
         stampCategories.hashCode ^
         stampImageBuilder.hashCode ^
+        selectedStampInterfaceColor.hashCode ^
         scrollPhysics.hashCode;
   }
 }

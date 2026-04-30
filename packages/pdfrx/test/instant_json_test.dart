@@ -25,15 +25,15 @@ void main() {
       );
     });
 
-    test('skips entries with unknown type, wrong v, out-of-range pageIndex, and < 2 points', () {
+    test('skips entries with unknown type, missing v, or out-of-range pageIndex', () {
       const json = '''
         {
           "annotations": [
             {"v": 1, "type": "pspdfkit/highlight", "pageIndex": 0, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
-            {"v": 2, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
+            {"v": 0, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
+            {"v": "bad", "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
             {"v": 1, "type": "pspdfkit/ink", "pageIndex": 99, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
             {"v": 1, "type": "pspdfkit/ink", "pageIndex": -1, "lines": {"points": [[[0,0],[1,1]]]}, "lineWidth": 1, "strokeColor": "#000000"},
-            {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[5,5]]]}, "lineWidth": 1, "strokeColor": "#000000"},
             {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[7,7],[8,8]]]}, "lineWidth": 1, "strokeColor": "#000000"}
           ]
         }
@@ -48,6 +48,95 @@ void main() {
 
       expect(result, hasLength(1));
       expect(result.single.pointsInPdfSpace, [const Offset(7, 7), const Offset(8, 8)]);
+    });
+
+    test('expands a multi-segment ink entry into one stroke per segment', () {
+      // pspdfkit packs multiple polylines under one annotation entry with
+      // shared metadata. Decoder must produce one PdfInkAnnotation per
+      // segment.
+      const json = '''
+        {
+          "annotations": [
+            {
+              "v": 2,
+              "type": "pspdfkit/ink",
+              "pageIndex": 0,
+              "lineWidth": 3,
+              "strokeColor": "#FF3B30",
+              "creatorName": "alice",
+              "lines": {
+                "points": [
+                  [[1,1],[2,2]],
+                  [[10,10],[11,11],[12,12]],
+                  [[20,20],[21,21]]
+                ]
+              }
+            }
+          ]
+        }
+      ''';
+      final result = decodeInstantJson(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 2.0,
+      );
+      expect(result, hasLength(3));
+      // Shared metadata propagates to every decoded stroke.
+      for (final stroke in result) {
+        expect(stroke.creatorName, 'alice');
+        expect(stroke.lineWidth, 3);
+        expect(stroke.pageIndex, 0);
+      }
+      expect(result[0].pointsInPdfSpace, [const Offset(1, 1), const Offset(2, 2)]);
+      expect(result[1].pointsInPdfSpace, [const Offset(10, 10), const Offset(11, 11), const Offset(12, 12)]);
+      expect(result[2].pointsInPdfSpace, [const Offset(20, 20), const Offset(21, 21)]);
+    });
+
+    test('preserves single-point segments (pspdfkit "dot" tap)', () {
+      // pspdfkit treats a tap with no drag as a 1-point segment and
+      // renders it as a small filled circle. pdfrx preserves the
+      // segment verbatim — the painter renders a zero-length stroke
+      // with round caps as a circle of diameter `lineWidth`, matching
+      // pspdfkit's marker-tap visual without reshaping the data.
+      const json = '''
+        {
+          "annotations": [
+            {"v": 1, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[5,5]]]}, "lineWidth": 1, "strokeColor": "#000000"}
+          ]
+        }
+      ''';
+      final result = decodeInstantJson(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 2.0,
+      );
+      expect(result, hasLength(1));
+      expect(result.single.pointsInPdfSpace, [const Offset(5, 5)]);
+    });
+
+    test('accepts any positive integer v (forward-compat with pspdfkit v:2)', () {
+      // pspdfkit's native Instant JSON wire format uses v: 2; the ink schema
+      // didn't break compat with v: 1 for the fields pdfrx reads, so the
+      // decoder treats `v` as a soft forward-compat marker.
+      const json = '''
+        {
+          "annotations": [
+            {"v": 2, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[1,2],[3,4]]]}, "lineWidth": 1, "strokeColor": "#000000"},
+            {"v": 7, "type": "pspdfkit/ink", "pageIndex": 0, "lines": {"points": [[[5,6],[7,8]]]}, "lineWidth": 1, "strokeColor": "#000000"}
+          ]
+        }
+      ''';
+      final result = decodeInstantJson(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 2.0,
+      );
+      expect(result, hasLength(2));
+      expect(result.first.pointsInPdfSpace, [const Offset(1, 2), const Offset(3, 4)]);
+      expect(result.last.pointsInPdfSpace, [const Offset(5, 6), const Offset(7, 8)]);
     });
 
     test('tolerates a bare-array form (no document wrapper)', () {

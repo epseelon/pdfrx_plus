@@ -21,7 +21,7 @@ PdfInkAnnotation _stroke({
 
 void main() {
   group('InkPainter stroke caps', () {
-    testWidgets('renders highlighter strokes with StrokeCap.butt and StrokeJoin.miter', (tester) async {
+    testWidgets('renders highlighter strokes with StrokeCap.round and StrokeJoin.round', (tester) async {
       final repaint = ValueNotifier<int>(0);
       final painter = InkPainter(
         strokes: [_stroke(kind: PdfInkAnnotationKind.highlighter, opacity: 0.35)],
@@ -39,13 +39,17 @@ void main() {
         ),
       );
 
+      // Highlighter strokes use rounded caps and joins to match pspdfkit's
+      // wide-tipped-marker look. The earlier butt/miter "ruler-edge"
+      // rendering produced visible square offshoots at lift-off points and
+      // sharp corners on tight curves.
       expect(
         find.byType(CustomPaint),
         paints..something(
           (method, args) =>
               method == #drawPath &&
-              (args[1] as Paint).strokeCap == StrokeCap.butt &&
-              (args[1] as Paint).strokeJoin == StrokeJoin.miter,
+              (args[1] as Paint).strokeCap == StrokeCap.round &&
+              (args[1] as Paint).strokeJoin == StrokeJoin.round,
         ),
       );
 

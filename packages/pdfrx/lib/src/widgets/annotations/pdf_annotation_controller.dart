@@ -15,7 +15,7 @@ enum PdfAnnotationTool {
   /// Default. Pan input creates new opaque round-capped ink strokes.
   pen,
 
-  /// Pan input creates new translucent butt-capped highlighter strokes.
+  /// Pan input creates new translucent round-capped highlighter strokes.
   /// Color and width are tracked separately from the pen via
   /// [PdfAnnotationController.highlighterColor] / [PdfAnnotationController.highlighterWidth];
   /// opacity is sourced at draw time from `PdfViewerParams.highlighterOpacity`.

@@ -36,12 +36,17 @@ class PdfAnnotationLayer extends StatefulWidget {
     required this.pageRect,
     required this.highlighterOpacity,
     this.stampImageBuilder,
+    this.selectedStampInterfaceColor,
     super.key,
   });
 
   final PdfAnnotationController controller;
   final PdfPage page;
   final Rect pageRect;
+
+  /// Color of the selection outline, handles, and buttons around the
+  /// currently selected stamp. `null` falls back to the theme's primary.
+  final Color? selectedStampInterfaceColor;
 
   /// Opacity stamped onto every newly-committed highlighter stroke. The
   /// caller (the `PdfViewer`) sources this from
@@ -258,7 +263,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     final top = stamp.rectInPdfSpace.top * scaleY;
     final width = stamp.rectInPdfSpace.width * scaleX;
     final height = stamp.rectInPdfSpace.height * scaleY;
-    final color = Theme.of(context).colorScheme.primary;
+    final color = widget.selectedStampInterfaceColor ?? Theme.of(context).colorScheme.primary;
+    final iconColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
 
     return Positioned(
       key: Key('stampSelection:${stamp.id}'),
@@ -309,7 +315,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                         color: color,
                         shape: const CircleBorder(),
                         elevation: 2,
-                        child: Icon(Icons.refresh, size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                        child: Icon(Icons.refresh, size: 16, color: iconColor),
                       ),
                     ),
                   ),
@@ -336,7 +342,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                         elevation: 2,
                         child: Tooltip(
                           message: 'Delete stamp',
-                          child: Icon(Icons.delete_outline, size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                          child: Icon(Icons.delete_outline, size: 16, color: iconColor),
                         ),
                       ),
                     ),
@@ -771,10 +777,12 @@ class InkPainter extends CustomPainter {
   }
 
   void _paintStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {
-    final (cap, join) = switch (stroke.kind) {
-      PdfInkAnnotationKind.pen => (StrokeCap.round, StrokeJoin.round),
-      PdfInkAnnotationKind.highlighter => (StrokeCap.butt, StrokeJoin.miter),
-    };
+    // Both pen and highlighter use round caps + round joins. Highlighter
+    // is differentiated by opacity and (typically) larger lineWidth, not
+    // by stroke geometry. Matching pspdfkit's render: highlighter strokes
+    // have rounded ends — like a wide-tipped marker — rather than the
+    // butt/miter "ruler-edge" look that an earlier prototype shipped.
+    final (cap, join) = (StrokeCap.round, StrokeJoin.round);
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..color = stroke.strokeColor.withValues(alpha: stroke.opacity)
@@ -783,9 +791,42 @@ class InkPainter extends CustomPainter {
       ..strokeJoin = join;
     final points = stroke.pointsInPdfSpace;
     if (points.isEmpty) return;
+
+    // Quadratic Bezier path smoothing.
+    //
+    // A naive `moveTo + lineTo*` polyline draws every recorded point
+    // verbatim, including any "lift-off" jitter at the end of a touch
+    // stroke (sparse trailing points after a dense traced shape). Pspdfkit
+    // and most natural-ink renderers smooth ink at draw time, which both
+    // softens the visual and absorbs the prominence of sparse trailing
+    // points whose direction differs from the surrounding curve.
+    //
+    // Algorithm: for each interior point `p[i]` (i in [1, len-2]), draw a
+    // quadratic Bezier whose control point is `p[i]` itself and whose
+    // endpoint is the midpoint of `p[i]` and `p[i+1]`. The path therefore
+    // passes through the midpoints, with the original points pulling the
+    // curve toward them as control points. The final segment is a
+    // straight line to the actual last point so the curve terminates
+    // exactly where the polyline ends.
     final path = Path()..moveTo(points.first.dx * scaleX, points.first.dy * scaleY);
-    for (var i = 1; i < points.length; i++) {
-      path.lineTo(points[i].dx * scaleX, points[i].dy * scaleY);
+    if (points.length == 1) {
+      // Single-point segment: a tap with no drag, or a 1-point in-flight
+      // stroke. Drawing a zero-length line at the same point produces a
+      // round-capped dot of diameter `lineWidth` — pspdfkit's "marker
+      // tap" rendering. Works for both pen and highlighter since both
+      // now use round caps.
+      path.lineTo(points.first.dx * scaleX, points.first.dy * scaleY);
+    } else if (points.length == 2) {
+      path.lineTo(points[1].dx * scaleX, points[1].dy * scaleY);
+    } else {
+      for (var i = 1; i < points.length - 1; i++) {
+        final cx = points[i].dx * scaleX;
+        final cy = points[i].dy * scaleY;
+        final mx = (points[i].dx + points[i + 1].dx) * 0.5 * scaleX;
+        final my = (points[i].dy + points[i + 1].dy) * 0.5 * scaleY;
+        path.quadraticBezierTo(cx, cy, mx, my);
+      }
+      path.lineTo(points.last.dx * scaleX, points.last.dy * scaleY);
     }
     canvas.drawPath(path, paint);
   }

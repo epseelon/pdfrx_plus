@@ -7,7 +7,7 @@ import 'dart:ui';
 /// JSON entry. Only the rendering and styling differ:
 ///
 /// * [pen] — opaque, round-capped, narrow.
-/// * [highlighter] — translucent, butt-capped, thick.
+/// * [highlighter] — translucent, round-capped, thick.
 ///
 /// This kind is **not** the PDF `/Highlight` text-attached annotation
 /// type, which uses rectangle quads anchored to selected text and would
@@ -19,7 +19,7 @@ enum PdfInkAnnotationKind {
   /// Default. Opaque round-capped stroke.
   pen,
 
-  /// Translucent butt-capped stroke. Opacity is sourced from
+  /// Translucent round-capped stroke. Opacity is sourced from
   /// `PdfViewerParams.highlighterOpacity` at draw time.
   highlighter,
 }

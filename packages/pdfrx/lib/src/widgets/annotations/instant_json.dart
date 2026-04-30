@@ -245,13 +245,9 @@ DecodedInstantJson decodeInstantJsonFull(
     if (entry is! Map<String, dynamic>) continue;
     final type = entry['type'];
     if (type == _inkAnnotationType) {
-      final stroke = _decodeInkEntry(
-        entry,
-        pageCount: pageCount,
-        defaultColor: defaultColor,
-        defaultLineWidth: defaultLineWidth,
+      strokes.addAll(
+        _decodeInkEntry(entry, pageCount: pageCount, defaultColor: defaultColor, defaultLineWidth: defaultLineWidth),
       );
-      if (stroke != null) strokes.add(stroke);
     } else if (type == _imageAnnotationType) {
       final stamp = _decodeStampEntry(entry, pageCount: pageCount, attachments: attachments);
       if (stamp != null) stamps.add(stamp);
@@ -266,32 +262,29 @@ DecodedInstantJson decodeInstantJsonFull(
   return DecodedInstantJson(strokes: strokes, stamps: stamps, attachments: attachments);
 }
 
-PdfInkAnnotation? _decodeInkEntry(
+List<PdfInkAnnotation> _decodeInkEntry(
   Map<String, dynamic> entry, {
   required int pageCount,
   required Color defaultColor,
   required double defaultLineWidth,
 }) {
-  if (entry['v'] != 1) return null;
+  // Accept any positive integer version. pspdfkit's Instant JSON v2 differs
+  // from v1 only in fields pdfrx doesn't read (e.g. `bbox`, `name`); the ink
+  // schema itself is forward-compatible. Treating the version as a soft
+  // forward-compat marker rather than a strict v:1 gate lets us round-trip
+  // legacy pspdfkit-authored documents and any future v:N revisions whose
+  // additions don't touch the fields this decoder consumes.
+  final version = entry['v'];
+  if (version is! int || version < 1) return const [];
 
   final pageIndex = entry['pageIndex'];
-  if (pageIndex is! int) return null;
-  if (pageIndex < 0 || pageIndex >= pageCount) return null;
+  if (pageIndex is! int) return const [];
+  if (pageIndex < 0 || pageIndex >= pageCount) return const [];
 
   final lines = entry['lines'];
-  if (lines is! Map<String, dynamic>) return null;
+  if (lines is! Map<String, dynamic>) return const [];
   final segments = lines['points'];
-  if (segments is! List || segments.isEmpty) return null;
-  final firstSegment = segments.first;
-  if (firstSegment is! List || firstSegment.length < 2) return null;
-
-  final points = <Offset>[];
-  for (final raw in firstSegment) {
-    if (raw is! List || raw.length < 2) return null;
-    final x = (raw[0] as num).toDouble();
-    final y = (raw[1] as num).toDouble();
-    points.add(Offset(x, y));
-  }
+  if (segments is! List || segments.isEmpty) return const [];
 
   final rawLineWidth = entry['lineWidth'];
   final lineWidth = (rawLineWidth is num && rawLineWidth.toDouble() > 0) ? rawLineWidth.toDouble() : defaultLineWidth;
@@ -315,17 +308,44 @@ PdfInkAnnotation? _decodeInkEntry(
       _kindFromString(entry['pdfrx:kind']) ??
       (opacity < 1.0 ? PdfInkAnnotationKind.highlighter : PdfInkAnnotationKind.pen);
 
-  return PdfInkAnnotation(
-    pageIndex: pageIndex,
-    pointsInPdfSpace: points,
-    lineWidth: lineWidth,
-    strokeColor: strokeColor,
-    opacity: opacity,
-    createdAt: createdAt,
-    updatedAt: updatedAt,
-    creatorName: creatorName,
-    kind: kind,
-  );
+  // pspdfkit's wire format groups multiple polylines under a single
+  // annotation entry — `lines.points: [[seg1...], [seg2...], ...]` — and
+  // each segment is a separate stroke that shares the entry's metadata
+  // (color, width, creator, timestamps, …). pdfrx's data model uses one
+  // [PdfInkAnnotation] per polyline, so we expand each non-empty segment
+  // into its own annotation. Single-point "dot tap" segments are
+  // preserved as-is — the renderer draws them as round-capped circles
+  // of diameter `lineWidth` (pen and highlighter both use round caps).
+  final out = <PdfInkAnnotation>[];
+  for (final segment in segments) {
+    if (segment is! List || segment.isEmpty) continue;
+    final points = <Offset>[];
+    var malformed = false;
+    for (final raw in segment) {
+      if (raw is! List || raw.length < 2) {
+        malformed = true;
+        break;
+      }
+      final x = (raw[0] as num).toDouble();
+      final y = (raw[1] as num).toDouble();
+      points.add(Offset(x, y));
+    }
+    if (malformed || points.isEmpty) continue;
+    out.add(
+      PdfInkAnnotation(
+        pageIndex: pageIndex,
+        pointsInPdfSpace: points,
+        lineWidth: lineWidth,
+        strokeColor: strokeColor,
+        opacity: opacity,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+        creatorName: creatorName,
+        kind: kind,
+      ),
+    );
+  }
+  return out;
 }
 
 PdfStampAnnotation? _decodeStampEntry(
@@ -333,7 +353,10 @@ PdfStampAnnotation? _decodeStampEntry(
   required int pageCount,
   required Map<String, PdfStampAttachment> attachments,
 }) {
-  if (entry['v'] != 1) return null;
+  // See [_decodeInkEntry] — version is a soft forward-compat marker, not a
+  // strict gate.
+  final version = entry['v'];
+  if (version is! int || version < 1) return null;
   final pageIndex = entry['pageIndex'];
   if (pageIndex is! int) return null;
   if (pageIndex < 0 || pageIndex >= pageCount) return null;
