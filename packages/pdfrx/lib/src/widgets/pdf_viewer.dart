@@ -595,7 +595,7 @@ class _PdfViewerState extends State<PdfViewer>
     );
   }
 
-  Offset _calcOverscroll(Matrix4 m, {required Size viewSize, bool allowExtendedBoundaries = true}) {
+  Offset _calcOverscroll(Matrix4 m, {required Size viewSize}) {
     final layout = _layout!;
     final visible = m.calcVisibleRect(viewSize);
     var dxDoc = 0.0;
@@ -3076,7 +3076,7 @@ class _PdfViewerState extends State<PdfViewer>
   /// Scrolls/zooms so that the specified PDF document coordinate appears at
   /// the top-left corner of the viewport.
   ///
-  /// If [pageNumber] and [wasAtBoundaries] are provided, applies margin snapping
+  /// If [pageNumber] is provided, applies margin snapping
   /// to ensure points that were at boundaries are positioned at the correct boundaries
   /// with new margins applied.
   Future<void> _goToPosition({
@@ -3504,7 +3504,7 @@ class _PdfViewerState extends State<PdfViewer>
         null,
         _contextMenuFor,
       );
-      return [if (contextMenu != null) contextMenu];
+      return [?contextMenu];
     }
 
     final renderBox = _renderBox;
@@ -3912,8 +3912,8 @@ class _PdfViewerState extends State<PdfViewer>
             ),
           ),
         ),
-      if (magnifier != null) magnifier,
-      if (contextMenu != null) contextMenu,
+      ?magnifier,
+      ?contextMenu,
     ];
   }
 

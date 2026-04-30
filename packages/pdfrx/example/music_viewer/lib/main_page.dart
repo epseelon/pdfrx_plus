@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
-import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
 import 'annotation_storage.dart';
 import 'color_popup.dart';
@@ -8,6 +7,7 @@ import 'draggable_panel.dart';
 import 'eraser_radius_popup.dart';
 import 'horizontal_facing_pages_layout.dart';
 import 'music_document.dart';
+import 'page_indicator.dart';
 import 'stamp_image_builder.dart';
 import 'stamp_library.dart';
 import 'stamp_picker_panel.dart';
@@ -111,7 +111,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             dragHandle(
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 8),
-                child: Tooltip(message: 'Drag to move', child: Icon(Icons.drag_indicator)),
+                child: Tooltip(
+                  message: 'Drag to move',
+                  child: Icon(Icons.drag_indicator),
+                ),
               ),
             ),
             IconButton.filledTonal(
@@ -139,8 +142,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               IconButton.filledTonal(
                 tooltip: 'Stamp',
                 isSelected: tool == PdfAnnotationTool.stamp,
-                selectedIcon: const Icon(Icons.bookmark),
-                icon: const Icon(Icons.bookmark_border),
+                selectedIcon: const Icon(Icons.approval_rounded),
+                icon: const Icon(Icons.approval_outlined),
                 onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.stamp),
               ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
@@ -204,7 +207,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               ),
               PdfAnnotationTool.stamp => const SizedBox.shrink(),
             },
-            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            if (tool != PdfAnnotationTool.stamp)
+              const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             ValueListenableBuilder<bool>(
               valueListenable: _controller.canUndoListenable,
               builder: (context, canUndo, _) => IconButton(
@@ -269,52 +273,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     }
   }
 
-  Widget _buildPageIndicator() {
-    if (!_controller.isReady) return const SizedBox.shrink();
-    final pageCount = _controller.pageCount;
-    final spreadCount = _twoPageMode ? (pageCount + 1) ~/ 2 : pageCount;
-    if (spreadCount < 2) return const SizedBox.shrink();
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        child: Center(
-          child: ValueListenableBuilder<int>(
-            valueListenable: _currentPage,
-            builder: (context, current, _) {
-              final currentSpread = _twoPageMode ? (current - 1) ~/ 2 : current - 1;
-              return Container(
-                margin: const EdgeInsets.only(top: 12),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: AnimatedSmoothIndicator(
-                  activeIndex: currentSpread.clamp(0, spreadCount - 1),
-                  count: spreadCount,
-                  duration: Duration(milliseconds: 0),
-                  effect: const ExpandingDotsEffect(
-                    dotColor: Colors.white54,
-                    activeDotColor: Colors.white,
-                    dotHeight: 8,
-                    dotWidth: 8,
-                    spacing: 8,
-                  ),
-                  onDotClicked: (i) => _controller.goToPage(
-                    pageNumber: _twoPageMode ? i * 2 + 1 : i + 1,
-                    duration: Duration.zero,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
   PdfPageLayout _layoutSinglePage(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
       SequentialPagesLayout.fromPages(
         pages,
@@ -369,7 +327,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       valueListenable: _controller.annotationModeListenable,
                       builder: (context, annotating, _) {
                         if (annotating) return const SizedBox.shrink();
-                        return _buildPageIndicator();
+                        return PageIndicator(
+                          controller: _controller,
+                          twoPageMode: _twoPageMode,
+                          currentPage: _currentPage,
+                        );
                       },
                     ),
                   ],
