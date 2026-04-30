@@ -1,26 +1,48 @@
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
-import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
+import 'annotation_storage.dart';
+import 'color_popup.dart';
+import 'draggable_panel.dart';
+import 'eraser_radius_popup.dart';
 import 'horizontal_facing_pages_layout.dart';
+import 'music_document.dart';
+import 'page_indicator.dart';
+import 'stamp_image_builder.dart';
+import 'stamp_library.dart';
+import 'stamp_picker_panel.dart';
+import 'stroke_thickness_popup.dart';
 
 class MainPage extends StatefulWidget {
-  const MainPage({required this.pdfFilePaths, super.key});
+  const MainPage({
+    required this.documents,
+    required this.annotationStorage,
+    super.key,
+  });
 
-  final List<String> pdfFilePaths;
+  /// The carousel of documents the user can swipe between.
+  final List<MusicDocument> documents;
+
+  /// Backend the page reads from on document open and writes to on
+  /// every annotation change.
+  final AnnotationStorage annotationStorage;
 
   @override
   State<MainPage> createState() => _MainPageState();
 }
 
 class _MainPageState extends State<MainPage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
-  final documentRef = ValueNotifier<PdfDocumentRef?>(null);
-  final controller = PdfViewerController();
+  final _documentRef = ValueNotifier<PdfDocumentRef?>(null);
+  final _controller = PdfViewerController();
   final _currentPage = ValueNotifier<int>(1);
+
+  final String _creatorName = 'alice';
 
   int? _fileIndex;
   bool _twoPageMode = true;
   bool _gotoLastOnReady = false;
+
+  List<PdfViewerStampCategory>? _stampCategories;
 
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
@@ -34,15 +56,26 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     WidgetsBinding.instance.addObserver(this);
     _fileIndex = 0;
     _openFile(index: _fileIndex);
+    _loadStamps();
   }
 
   @override
   void dispose() {
     _magnifierAnimController.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    documentRef.dispose();
+    _documentRef.dispose();
     _currentPage.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadStamps() async {
+    try {
+      final categories = await loadStampLibrary();
+      if (!mounted) return;
+      setState(() => _stampCategories = categories);
+    } catch (e, st) {
+      debugPrint('loadStampLibrary failed: $e\n$st');
+    }
   }
 
   @override
@@ -53,16 +86,155 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
 
   Future<void> _openFile({int? index, bool useProgressiveLoading = true}) async {
     if (index == null) {
-      documentRef.value = null;
+      _documentRef.value = null;
     } else {
-      final path = widget.pdfFilePaths[index];
-      documentRef.value = PdfDocumentRefFile(path, useProgressiveLoading: useProgressiveLoading);
+      final doc = widget.documents[index];
+      _documentRef.value = doc.refBuilder(useProgressiveLoading: useProgressiveLoading);
     }
   }
 
-  void _toggleMode() {
+  void _togglePageMode() {
     setState(() => _twoPageMode = !_twoPageMode);
-    WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _controller.invalidate());
+  }
+
+  Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle, PdfAnnotationTool tool) {
+    final stampAvailable = _stampCategories?.isNotEmpty ?? false;
+    return Material(
+      elevation: 8,
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(8),
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            dragHandle(
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Tooltip(
+                  message: 'Drag to move',
+                  child: Icon(Icons.drag_indicator),
+                ),
+              ),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Pen',
+              isSelected: tool == PdfAnnotationTool.pen,
+              selectedIcon: const Icon(Icons.edit),
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.pen),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Highlighter',
+              isSelected: tool == PdfAnnotationTool.highlighter,
+              selectedIcon: const Icon(Icons.highlight),
+              icon: const Icon(Icons.highlight_outlined),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.highlighter),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Eraser',
+              isSelected: tool == PdfAnnotationTool.eraser,
+              selectedIcon: const Icon(Icons.cleaning_services),
+              icon: const Icon(Icons.cleaning_services_outlined),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.eraser),
+            ),
+            if (stampAvailable)
+              IconButton.filledTonal(
+                tooltip: 'Stamp',
+                isSelected: tool == PdfAnnotationTool.stamp,
+                selectedIcon: const Icon(Icons.approval_rounded),
+                icon: const Icon(Icons.approval_outlined),
+                onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.stamp),
+              ),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            switch (tool) {
+              PdfAnnotationTool.pen => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ColorPopup(
+                    tooltip: 'Color',
+                    palette: <ColorPopupEntry>[
+                      (color: Color(0xFFFF3B30), label: 'Red'),
+                      (color: Color(0xFF000000), label: 'Black'),
+                      (color: Color(0xFF007AFF), label: 'Blue'),
+                      (color: Color(0xFF34C759), label: 'Green'),
+                      (color: Color(0xFFFF9500), label: 'Orange'),
+                      (color: Color(0xFFAF52DE), label: 'Purple'),
+                    ],
+                    valueListenable: _controller.annotationStrokeColorListenable,
+                    onSelected: _controller.setAnnotationStrokeColor,
+                  ),
+                  StrokeThicknessPopup(
+                    tooltip: 'Pen thickness',
+                    thicknesses: const <double>[1.0, 2.0, 3.0, 5.0, 8.0],
+                    widthListenable: _controller.annotationStrokeWidthListenable,
+                    colorListenable: _controller.annotationStrokeColorListenable,
+                    onSelected: _controller.setAnnotationStrokeWidth,
+                  ),
+                ],
+              ),
+              PdfAnnotationTool.highlighter => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ColorPopup(
+                    tooltip: 'Highlighter color',
+                    palette: <ColorPopupEntry>[
+                      (color: Color(0xFFFFFF00), label: 'Yellow'),
+                      (color: Color(0xFF00FF00), label: 'Green'),
+                      (color: Color(0xFFFF69B4), label: 'Pink'),
+                      (color: Color(0xFFFFA500), label: 'Orange'),
+                      (color: Color(0xFF00BFFF), label: 'Blue'),
+                    ],
+                    valueListenable: _controller.annotationHighlighterColorListenable,
+                    onSelected: _controller.setAnnotationHighlighterColor,
+                  ),
+                  StrokeThicknessPopup(
+                    tooltip: 'Highlighter thickness',
+                    thicknesses: const <double>[8.0, 12.0, 16.0, 24.0],
+                    widthListenable: _controller.annotationHighlighterWidthListenable,
+                    colorListenable: _controller.annotationHighlighterColorListenable,
+                    onSelected: _controller.setAnnotationHighlighterWidth,
+                    opacity: 0.35,
+                    iconMaxThickness: 24.0,
+                  ),
+                ],
+              ),
+              PdfAnnotationTool.eraser => EraserRadiusPopup(
+                tooltip: 'Eraser size',
+                radii: const <double>[5.0, 10.0, 20.0, 40.0],
+                radiusListenable: _controller.annotationEraserRadiusListenable,
+                onSelected: _controller.setAnnotationEraserRadius,
+              ),
+              PdfAnnotationTool.stamp => const SizedBox.shrink(),
+            },
+            if (tool != PdfAnnotationTool.stamp)
+              const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            ValueListenableBuilder<bool>(
+              valueListenable: _controller.canUndoListenable,
+              builder: (context, canUndo, _) => IconButton(
+                tooltip: 'Undo',
+                icon: const Icon(Icons.undo),
+                onPressed: canUndo ? _controller.undo : null,
+              ),
+            ),
+            ValueListenableBuilder<bool>(
+              valueListenable: _controller.canRedoListenable,
+              builder: (context, canRedo, _) => IconButton(
+                tooltip: 'Redo',
+                icon: const Icon(Icons.redo),
+                onPressed: canRedo ? _controller.redo : null,
+              ),
+            ),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+            IconButton(
+              tooltip: 'Close',
+              icon: const Icon(Icons.close),
+              onPressed: () => _controller.exitAnnotationMode(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   int get _step => _twoPageMode ? 2 : 1;
@@ -72,7 +244,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   int _lastSpreadStart(int pageCount) => _twoPageMode && pageCount.isEven ? pageCount - 1 : pageCount;
 
   void _switchDocument(int delta, {bool gotoLast = false}) {
-    final n = widget.pdfFilePaths.length;
+    final n = widget.documents.length;
     setState(() {
       _fileIndex = ((_fileIndex! + delta) % n + n) % n;
       _gotoLastOnReady = gotoLast;
@@ -82,69 +254,23 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   }
 
   void _next() {
-    if (!controller.isReady) return;
-    final next = _spreadStart(controller.pageNumber ?? 1) + _step;
-    if (next > controller.pageCount) {
+    if (!_controller.isReady) return;
+    final next = _spreadStart(_controller.pageNumber ?? 1) + _step;
+    if (next > _controller.pageCount) {
       _switchDocument(1);
     } else {
-      controller.goToPage(pageNumber: next, duration: Duration.zero);
+      _controller.goToPage(pageNumber: next, duration: Duration.zero);
     }
   }
 
   void _prev() {
-    if (!controller.isReady) return;
-    final prev = _spreadStart(controller.pageNumber ?? 1) - _step;
+    if (!_controller.isReady) return;
+    final prev = _spreadStart(_controller.pageNumber ?? 1) - _step;
     if (prev < 1) {
       _switchDocument(-1, gotoLast: true);
     } else {
-      controller.goToPage(pageNumber: prev, duration: Duration.zero);
+      _controller.goToPage(pageNumber: prev, duration: Duration.zero);
     }
-  }
-
-  Widget _buildPageIndicator() {
-    if (!controller.isReady) return const SizedBox.shrink();
-    final pageCount = controller.pageCount;
-    final spreadCount = _twoPageMode ? (pageCount + 1) ~/ 2 : pageCount;
-    if (spreadCount < 2) return const SizedBox.shrink();
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        child: Center(
-          child: ValueListenableBuilder<int>(
-            valueListenable: _currentPage,
-            builder: (context, current, _) {
-              final currentSpread = _twoPageMode ? (current - 1) ~/ 2 : current - 1;
-              return Container(
-                margin: const EdgeInsets.only(top: 12),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: AnimatedSmoothIndicator(
-                  activeIndex: currentSpread.clamp(0, spreadCount - 1),
-                  count: spreadCount,
-                  duration: Duration(milliseconds: 500),
-                  effect: const ExpandingDotsEffect(
-                    dotColor: Colors.white54,
-                    activeDotColor: Colors.white,
-                    dotHeight: 8,
-                    dotWidth: 8,
-                    spacing: 8,
-                  ),
-                  onDotClicked: (i) => controller.goToPage(
-                    pageNumber: _twoPageMode ? i * 2 + 1 : i + 1,
-                    duration: Duration.zero,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
   }
 
   PdfPageLayout _layoutSinglePage(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper) =>
@@ -168,35 +294,46 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
       body: Stack(
         children: [
           ValueListenableBuilder(
-            valueListenable: documentRef,
+            valueListenable: _documentRef,
             builder: (context, docRef, child) {
               if (docRef == null) {
                 return const Center(child: CircularProgressIndicator());
               }
               return PdfViewer(
                 docRef,
-                controller: controller,
+                controller: _controller,
                 params: PdfViewerParams(
                   keyHandlerParams: PdfViewerKeyHandlerParams(autofocus: true),
                   maxScale: 8,
                   scrollPhysics: PdfViewerParams.getScrollPhysics(context),
                   pageTransition: PageTransition.discrete,
+                  stampCategories: _stampCategories,
+                  stampImageBuilder: _stampCategories == null ? null : stampImageBuilder,
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
                   customizeContextMenuItems: (params, items) {},
+                  onGeneralTap: (context, controller, details) {
+                    if (details.type != PdfViewerGeneralTapType.tap) return false;
+                    if (controller.annotationModeListenable.value) return false;
+                    final width = controller.viewSize.width;
+                    if (details.localPosition.dx < width / 2) {
+                      _prev();
+                    } else {
+                      _next();
+                    }
+                    return true;
+                  },
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [
-                    Positioned.fill(
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _prev()),
-                          ),
-                          Expanded(
-                            child: GestureDetector(behavior: HitTestBehavior.translucent, onTapDown: (_) => _next()),
-                          ),
-                        ],
-                      ),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: _controller.annotationModeListenable,
+                      builder: (context, annotating, _) {
+                        if (annotating) return const SizedBox.shrink();
+                        return PageIndicator(
+                          controller: _controller,
+                          twoPageMode: _twoPageMode,
+                          currentPage: _currentPage,
+                        );
+                      },
                     ),
-                    _buildPageIndicator(),
                   ],
                   onPageChanged: (pageNumber) {
                     if (pageNumber != null) _currentPage.value = pageNumber;
@@ -211,6 +348,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   onDocumentChanged: (document) async {
                     if (document == null) {}
                   },
+                  onAnnotationsChanged: (json) async {
+                    final idx = _fileIndex;
+                    if (idx == null) return;
+                    await widget.annotationStorage.write(widget.documents[idx].storageKey, json);
+                  },
                   onViewerReady: (document, controller) async {
                     controller.requestFocus();
                     controller.document.events.listen((event) {});
@@ -222,6 +364,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     } else {
                       _currentPage.value = controller.pageNumber ?? 1;
                     }
+                    final idx = _fileIndex;
+                    if (idx != null) {
+                      try {
+                        final json = await widget.annotationStorage.read(widget.documents[idx].storageKey);
+                        if (json != null) controller.applyAnnotationsFromJson(json);
+                      } catch (e, st) {
+                        debugPrint('annotation load failed: $e\n$st');
+                      }
+                    }
                   },
                 ),
               );
@@ -230,23 +381,154 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
           Positioned(
             bottom: 32,
             left: 32,
-            child: FloatingActionButton(
-              tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
-              onPressed: _toggleMode,
-              child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _controller.annotationModeListenable,
+              builder: (context, annotating, _) {
+                if (annotating) return const SizedBox.shrink();
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    FloatingActionButton(
+                      heroTag: 'annotate',
+                      tooltip: 'Annotate',
+                      onPressed: () => _controller.enterAnnotationMode(
+                        creatorName: _creatorName,
+                      ),
+                      child: const Icon(Icons.edit),
+                    ),
+                    const SizedBox(height: 16),
+                    FloatingActionButton(
+                      heroTag: 'toggleMode',
+                      tooltip: _twoPageMode ? 'Switch to single page' : 'Switch to two pages',
+                      onPressed: _togglePageMode,
+                      child: Icon(_twoPageMode ? Icons.looks_one : Icons.menu_book),
+                    ),
+                  ],
+                );
+              },
             ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: _controller.annotationModeListenable,
+            builder: (context, annotating, _) {
+              if (!annotating) return const SizedBox.shrink();
+              return Positioned.fill(
+                child: DraggablePanel(
+                  builder: (context, dragHandle) => ValueListenableBuilder<PdfAnnotationTool>(
+                    valueListenable: _controller.annotationToolListenable,
+                    builder: (context, tool, _) => _buildAnnotationToolbar(dragHandle, tool),
+                  ),
+                ),
+              );
+            },
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: _controller.annotationModeListenable,
+            builder: (context, annotating, _) {
+              final categories = _stampCategories;
+              if (!annotating || categories == null || categories.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return ValueListenableBuilder<PdfAnnotationTool>(
+                valueListenable: _controller.annotationToolListenable,
+                builder: (context, tool, _) {
+                  // Library visibility tracks the active tool: visible
+                  // when the user is in stamp mode, hidden otherwise.
+                  if (tool != PdfAnnotationTool.stamp) return const SizedBox.shrink();
+                  return Positioned.fill(
+                    child: DraggablePanel(
+                      // iPad-friendly default: dock at the right edge,
+                      // vertically centered, so it doesn't overlap the
+                      // status-bar clock or window controls in the
+                      // top-left corner.
+                      initialAlignment: Alignment.centerRight,
+                      resizable: true,
+                      initialSize: const Size(280, 480),
+                      minSize: const Size(220, 260),
+                      builder: (context, dragHandle) => Material(
+                        elevation: 8,
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        clipBehavior: Clip.antiAlias,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.max,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            dragHandle(
+                              SizedBox(
+                                height: 28,
+                                child: Tooltip(
+                                  message: 'Drag to move',
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                                      spacing: 3,
+                                      children: [
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const Divider(height: 1, thickness: 1),
+                            Expanded(
+                              child: StampPickerPanel(
+                                controller: _controller,
+                                categories: categories,
+                                stampImageBuilder: stampImageBuilder,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        child: Icon(Icons.skip_next),
-        onPressed: () {
-          if (_fileIndex != null) {
-            setState(() {
-              _fileIndex = (_fileIndex! + 1) % widget.pdfFilePaths.length;
-              _openFile(index: _fileIndex);
-            });
-          }
+      floatingActionButton: ValueListenableBuilder<bool>(
+        valueListenable: _controller.annotationModeListenable,
+        builder: (context, annotating, _) {
+          if (annotating) return const SizedBox.shrink();
+          return FloatingActionButton(
+            heroTag: 'skipNext',
+            child: const Icon(Icons.skip_next),
+            onPressed: () {
+              if (_fileIndex != null) {
+                setState(() {
+                  _fileIndex = (_fileIndex! + 1) % widget.documents.length;
+                  _openFile(index: _fileIndex);
+                });
+              }
+            },
+          );
         },
       ),
     );

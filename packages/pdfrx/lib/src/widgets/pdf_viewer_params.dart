@@ -74,6 +74,11 @@ class PdfViewerParams {
     this.keyHandlerParams = const PdfViewerKeyHandlerParams(),
     this.behaviorControlParams = const PdfViewerBehaviorControlParams(),
     this.forceReload = false,
+    this.onAnnotationsChanged,
+    this.highlighterOpacity = 0.35,
+    this.stampCategories,
+    this.stampImageBuilder,
+    this.selectedStampInterfaceColor,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -83,6 +88,11 @@ class PdfViewerParams {
          'useAlternativeFitScaleAsMinScale is deprecated and forces FitMode.fit behavior, '
          'making the fitMode parameter ($fitMode) ineffective. '
          'Remove the useAlternativeFitScaleAsMinScale parameter to use fitMode as intended.',
+       ),
+       assert(
+         stampImageBuilder != null || stampCategories == null,
+         'stampImageBuilder must be supplied when stampCategories is non-null. '
+         'Pass stampCategories: null (or omit it) to disable the stamp tool.',
        );
 
   /// Margin around the page.
@@ -90,6 +100,47 @@ class PdfViewerParams {
 
   /// Background color of the viewer.
   final Color backgroundColor;
+
+  /// Called once on `PdfViewerController.exitAnnotationMode()` with the
+  /// current ink annotations serialized as Instant JSON. The viewer awaits
+  /// this future before fully exiting mode.
+  ///
+  /// Not fired by `applyAnnotationsFromJson` or `clearAnnotations`.
+  final PdfAnnotationsChangedCallback? onAnnotationsChanged;
+
+  /// Opacity stamped onto every newly-committed highlighter
+  /// ([PdfAnnotationTool.highlighter]) stroke. Default `0.35`. Clamped
+  /// to `[0.0, 1.0]` at use time.
+  ///
+  /// This is an integrator-level styling decision, not a user-tunable
+  /// per-session knob: there is no controller setter, no
+  /// [ValueListenable], and no `enterAnnotationMode` parameter for it
+  /// in v1. Changing the value mid-session requires rebuilding the
+  /// `PdfViewer` with new params; already-committed strokes retain
+  /// their original opacity, only newly-drawn strokes see the change.
+  final double highlighterOpacity;
+
+  /// Stamp library available to the user while
+  /// [PdfAnnotationTool.stamp] is active. `null` and an empty list are
+  /// equivalent — both disable the stamp tool entirely (no Stamp button
+  /// is rendered, no picker panel appears).
+  ///
+  /// Stamps are picker shortcuts only: when placed, their raw bytes are
+  /// embedded into the saved Instant JSON document as a SHA-256-keyed
+  /// attachment. Adding/removing/renaming items in the host's stamp
+  /// library never breaks past documents.
+  final List<PdfViewerStampCategory>? stampCategories;
+
+  /// Renderer for stamp images. Required when [stampCategories] is
+  /// non-empty (asserted at construction). Receives the raw bytes,
+  /// declared MIME type, and the exact display size in widget pixels;
+  /// must respect the requested size (no intrinsic sizing).
+  final PdfStampImageBuilder? stampImageBuilder;
+
+  /// Color of the selection outline, resize handles, rotation handle,
+  /// and delete button rendered around the currently selected stamp.
+  /// When `null`, falls back to `Theme.of(context).colorScheme.primary`.
+  final Color? selectedStampInterfaceColor;
 
   /// Function to customize the layout of the pages.
   ///
@@ -758,6 +809,10 @@ class PdfViewerParams {
         other.keyHandlerParams == keyHandlerParams &&
         other.behaviorControlParams == behaviorControlParams &&
         other.forceReload == forceReload &&
+        other.highlighterOpacity == highlighterOpacity &&
+        other.stampCategories == stampCategories &&
+        other.stampImageBuilder == stampImageBuilder &&
+        other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.scrollPhysics == scrollPhysics;
   }
 
@@ -819,6 +874,10 @@ class PdfViewerParams {
         keyHandlerParams.hashCode ^
         behaviorControlParams.hashCode ^
         forceReload.hashCode ^
+        highlighterOpacity.hashCode ^
+        stampCategories.hashCode ^
+        stampImageBuilder.hashCode ^
+        selectedStampInterfaceColor.hashCode ^
         scrollPhysics.hashCode;
   }
 }
@@ -1575,6 +1634,20 @@ typedef PdfViewerErrorBannerBuilder =
 ///
 /// [size] is the size of the link.
 typedef PdfLinkWidgetBuilder = Widget? Function(BuildContext context, PdfLink link, Size size);
+
+/// Called when the user exits annotation drawing mode (via
+/// `PdfViewerController.exitAnnotationMode`).
+///
+/// Receives the current set of ink annotations serialized as an
+/// Instant JSON document (see https://www.nutrient.io/guides/web/json/).
+/// The viewer awaits this future before fully exiting mode, so I/O
+/// performed here is guaranteed to flush even if the user immediately
+/// backgrounds the app.
+///
+/// Annotations are document-blind: implementers must associate the
+/// JSON with the correct document themselves (using `PdfDocument.sourceName`,
+/// a file path, etc.).
+typedef PdfAnnotationsChangedCallback = Future<void> Function(String json);
 
 /// Function to paint things on page.
 ///

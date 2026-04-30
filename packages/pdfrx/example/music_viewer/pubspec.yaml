@@ -23,6 +23,8 @@ dependencies:
   http: ^1.5.0
   path_provider: ^2.1.5
   smooth_page_indicator: ^2.0.1
+  crypto: ^3.0.7
+  flutter_svg: ^2.0.10
 
 dev_dependencies:
   flutter_test:
@@ -34,3 +36,10 @@ flutter:
 
   assets:
     - assets/
+    - assets/music_stamps/dynamics/
+    - assets/music_stamps/keys/
+    - assets/music_stamps/notes/
+    - assets/music_stamps/ornaments/
+    - assets/music_stamps/repetition/
+    - assets/music_stamps/silence/
+    - assets/music_stamps/time_signatures/

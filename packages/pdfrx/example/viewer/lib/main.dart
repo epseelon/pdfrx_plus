@@ -50,7 +50,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final _markers = <int, List<Marker>>{};
   List<PdfPageTextRange>? textSelections;
 
-  bool _isDraggingHandle = false;
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
     duration: const Duration(milliseconds: 250),
@@ -432,17 +431,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                           //   animationDuration: Duration.zero,
                           // ),
                           onSelectionHandlePanStart: (anchor) {
-                            setState(() {
-                              _isDraggingHandle = true;
-                            });
+                            setState(() {});
                           },
 
                           onSelectionHandlePanEnd: (anchor) {
                             // Animate out, then reset for next drag
                             if (mounted) {
-                              setState(() {
-                                _isDraggingHandle = false;
-                              });
+                              setState(() {});
                             }
                             _magnifierAnimController.reverse().then((_) {
                               _magnifierAnimController.reset();
