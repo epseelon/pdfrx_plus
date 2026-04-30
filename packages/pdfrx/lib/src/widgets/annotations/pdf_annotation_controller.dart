@@ -798,10 +798,10 @@ class PdfAnnotationController extends ChangeNotifier {
       final now = (clock ?? _defaultClock)();
       final id = (idGenerator ?? _defaultIdGenerator)();
 
-      // Dedupe attachment bytes.
-      _attachments.putIfAbsent(hash, () => PdfStampAttachment(bytes: bytes, contentType: contentType));
-
+      // Snapshot before any mutation so undo restores the pre-placement
+      // state, including dropping the attachment when it was newly added.
       _pushUndoSnapshot();
+      _attachments.putIfAbsent(hash, () => PdfStampAttachment(bytes: bytes, contentType: contentType));
       _stamps.add(
         PdfStampAnnotation(
           id: id,

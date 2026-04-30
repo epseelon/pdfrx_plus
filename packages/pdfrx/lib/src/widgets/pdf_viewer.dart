@@ -215,6 +215,7 @@ class _PdfViewerState extends State<PdfViewer>
     with SingleTickerProviderStateMixin
     implements PdfTextSelectionDelegate, PdfViewerCoordinateConverter {
   PdfViewerController? _controller;
+  bool _ownsController = false;
   late final _txController = _PdfViewerTransformationController(this);
   late final AnimationController _animController;
   Animation<Matrix4>? _animGoTo;
@@ -372,7 +373,10 @@ class _PdfViewerState extends State<PdfViewer>
 
     _document = document;
 
-    _controller ??= widget.controller ?? PdfViewerController();
+    if (_controller == null) {
+      _ownsController = widget.controller == null;
+      _controller = widget.controller ?? PdfViewerController();
+    }
     _controller!._attach(this);
     _txController.addListener(_onMatrixChanged);
     _documentSubscription = document.events.listen(_onDocumentEvent);
@@ -423,6 +427,9 @@ class _PdfViewerState extends State<PdfViewer>
     _canvasLinkPainter.resetAll();
     _txController.removeListener(_onMatrixChanged);
     _controller?._attach(null);
+    if (_ownsController) {
+      _controller?.dispose();
+    }
     _txController.dispose();
     super.dispose();
   }
@@ -4920,6 +4927,14 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       __state!._txController.addListener(_notifyListeners);
       _annotationController.annotationModeListenable.addListener(__state!._onAnnotationModeChanged);
     }
+  }
+
+  /// Releases owned resources. Auto-created controllers (when no
+  /// `controller` was supplied to [PdfViewer]) are disposed by the
+  /// viewer state on widget disposal. Callers who construct their own
+  /// [PdfViewerController] are responsible for disposing it.
+  void dispose() {
+    _annotationController.dispose();
   }
 
   void _notifyListeners() {

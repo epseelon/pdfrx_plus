@@ -350,6 +350,31 @@ void main() {
       expect(controller.stamps, hasLength(1));
     });
 
+    test('undo of placeStamp drops the newly-added attachment', () {
+      final controller = PdfAnnotationController();
+      addTearDown(controller.dispose);
+      controller.enterMode(creatorName: 'alice', tool: PdfAnnotationTool.stamp);
+
+      controller.placeStamp(
+        bytes: Uint8List.fromList([1]),
+        contentType: 'image/svg+xml',
+        pageIndex: 0,
+        pdfPoint: const Offset(50, 50),
+        intrinsicSize: const Size(24, 24),
+        pageSize: _pageSize,
+        idGenerator: () => 'a',
+      );
+      expect(controller.attachments, hasLength(1));
+
+      controller.undo();
+      expect(controller.stamps, isEmpty);
+      expect(controller.attachments, isEmpty);
+
+      controller.redo();
+      expect(controller.stamps, hasLength(1));
+      expect(controller.attachments, hasLength(1));
+    });
+
     test('deleteStamp pushes one undo snapshot; undo restores the deleted stamp', () {
       final controller = PdfAnnotationController();
       addTearDown(controller.dispose);
