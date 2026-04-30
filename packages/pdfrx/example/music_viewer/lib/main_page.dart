@@ -3,12 +3,15 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 
 import 'annotation_storage.dart';
+import 'color_popup.dart';
 import 'draggable_panel.dart';
+import 'eraser_radius_popup.dart';
 import 'horizontal_facing_pages_layout.dart';
 import 'music_document.dart';
 import 'stamp_image_builder.dart';
 import 'stamp_library.dart';
 import 'stamp_picker_panel.dart';
+import 'stroke_thickness_popup.dart';
 
 class MainPage extends StatefulWidget {
   const MainPage({
@@ -28,210 +31,9 @@ class MainPage extends StatefulWidget {
   State<MainPage> createState() => _MainPageState();
 }
 
-class _ColorPopup extends StatelessWidget {
-  const _ColorPopup({required this.controller, required this.tool});
-
-  final PdfViewerController controller;
-  final PdfAnnotationTool tool;
-
-  static const _penPalette = <Color>[
-    Color(0xFFFF3B30),
-    Color(0xFF000000),
-    Color(0xFF007AFF),
-    Color(0xFF34C759),
-    Color(0xFFFF9500),
-    Color(0xFFAF52DE),
-  ];
-  static const _highlighterPalette = <Color>[
-    Color(0xFFFFFF00),
-    Color(0xFF00FF00),
-    Color(0xFFFF69B4),
-    Color(0xFFFFA500),
-    Color(0xFF00BFFF),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final isHighlighter = tool == PdfAnnotationTool.highlighter;
-    final listenable = isHighlighter
-        ? controller.annotationHighlighterColorListenable
-        : controller.annotationStrokeColorListenable;
-    final ValueChanged<Color> onSelected = isHighlighter
-        ? controller.setAnnotationHighlighterColor
-        : controller.setAnnotationStrokeColor;
-    final palette = isHighlighter ? _highlighterPalette : _penPalette;
-    final tooltip = isHighlighter ? 'Highlighter color' : 'Color';
-    return ValueListenableBuilder<Color>(
-      valueListenable: listenable,
-      builder: (context, current, _) => PopupMenuButton<Color>(
-        tooltip: tooltip,
-        icon: Icon(Icons.circle, color: current),
-        onSelected: onSelected,
-        itemBuilder: (context) => [
-          for (final c in palette)
-            CheckedPopupMenuItem<Color>(
-              value: c,
-              checked: c == current,
-              child: Row(
-                children: [
-                  Icon(Icons.circle, color: c, size: 20),
-                  const SizedBox(width: 8),
-                  Text(_colorLabel(c)),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  static String _colorLabel(Color c) {
-    if (c == const Color(0xFFFF3B30)) return 'Red';
-    if (c == const Color(0xFF000000)) return 'Black';
-    if (c == const Color(0xFF007AFF)) return 'Blue';
-    if (c == const Color(0xFF34C759)) return 'Green';
-    if (c == const Color(0xFFFF9500)) return 'Orange';
-    if (c == const Color(0xFFAF52DE)) return 'Purple';
-    if (c == const Color(0xFFFFFF00)) return 'Yellow';
-    if (c == const Color(0xFF00FF00)) return 'Green';
-    if (c == const Color(0xFFFF69B4)) return 'Pink';
-    if (c == const Color(0xFFFFA500)) return 'Orange';
-    if (c == const Color(0xFF00BFFF)) return 'Blue';
-    return 'Custom';
-  }
-}
-
-class _ThicknessPopup extends StatelessWidget {
-  const _ThicknessPopup({required this.controller, required this.tool});
-
-  final PdfViewerController controller;
-  final PdfAnnotationTool tool;
-
-  static const _penThicknesses = <double>[1.0, 2.0, 3.0, 5.0, 8.0];
-  static const _highlighterThicknesses = <double>[8.0, 12.0, 16.0, 24.0];
-  static const _eraserSizes = <double>[5.0, 10.0, 20.0, 40.0];
-
-  @override
-  Widget build(BuildContext context) {
-    switch (tool) {
-      case PdfAnnotationTool.pen:
-        return ValueListenableBuilder<Color>(
-          valueListenable: controller.annotationStrokeColorListenable,
-          builder: (context, color, _) => ValueListenableBuilder<double>(
-            valueListenable: controller.annotationStrokeWidthListenable,
-            builder: (context, current, _) => PopupMenuButton<double>(
-              tooltip: 'Pen thickness',
-              icon: _strokePreview(current, color, width: 22),
-              onSelected: controller.setAnnotationStrokeWidth,
-              itemBuilder: (context) => [
-                for (final w in _penThicknesses)
-                  CheckedPopupMenuItem<double>(
-                    value: w,
-                    checked: w == current,
-                    child: Row(
-                      children: [
-                        _strokePreview(w, color),
-                        const SizedBox(width: 12),
-                        Text('${w.toStringAsFixed(1)} pt'),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      case PdfAnnotationTool.highlighter:
-        return ValueListenableBuilder<Color>(
-          valueListenable: controller.annotationHighlighterColorListenable,
-          builder: (context, color, _) => ValueListenableBuilder<double>(
-            valueListenable: controller.annotationHighlighterWidthListenable,
-            builder: (context, current, _) => PopupMenuButton<double>(
-              tooltip: 'Highlighter thickness',
-              icon: _strokePreview(current.clamp(0.0, 24.0), color, width: 22, opacity: 0.35),
-              onSelected: controller.setAnnotationHighlighterWidth,
-              itemBuilder: (context) => [
-                for (final w in _highlighterThicknesses)
-                  CheckedPopupMenuItem<double>(
-                    value: w,
-                    checked: w == current,
-                    child: Row(
-                      children: [
-                        _strokePreview(w, color, opacity: 0.35),
-                        const SizedBox(width: 12),
-                        Text('${w.toStringAsFixed(1)} pt'),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      case PdfAnnotationTool.stamp:
-        return const SizedBox.shrink();
-      case PdfAnnotationTool.eraser:
-        final borderColor = Theme.of(context).colorScheme.onSurface;
-        return ValueListenableBuilder<double>(
-          valueListenable: controller.annotationEraserRadiusListenable,
-          builder: (context, current, _) => PopupMenuButton<double>(
-            tooltip: 'Eraser size',
-            icon: _eraserPreview(current.clamp(4, 22), borderColor, box: 22),
-            onSelected: controller.setAnnotationEraserRadius,
-            itemBuilder: (context) => [
-              for (final r in _eraserSizes)
-                CheckedPopupMenuItem<double>(
-                  value: r,
-                  checked: r == current,
-                  child: Row(
-                    children: [
-                      _eraserPreview(r, borderColor),
-                      const SizedBox(width: 12),
-                      Text('${r.toStringAsFixed(0)} pt'),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        );
-    }
-  }
-
-  Widget _strokePreview(double thickness, Color color, {double width = 60, double opacity = 1.0}) => SizedBox(
-    width: width,
-    height: 12,
-    child: Center(
-      child: Container(
-        width: width,
-        height: thickness,
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: opacity),
-          borderRadius: BorderRadius.circular(thickness / 2),
-        ),
-      ),
-    ),
-  );
-
-  Widget _eraserPreview(double size, Color borderColor, {double box = 48}) {
-    final diameter = size.clamp(0, box);
-    return SizedBox(
-      width: box,
-      height: box,
-      child: Center(
-        child: Container(
-          width: diameter.toDouble(),
-          height: diameter.toDouble(),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: borderColor, width: 1.5),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _MainPageState extends State<MainPage> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
-  final documentRef = ValueNotifier<PdfDocumentRef?>(null);
-  final controller = PdfViewerController();
+  final _documentRef = ValueNotifier<PdfDocumentRef?>(null);
+  final _controller = PdfViewerController();
   final _currentPage = ValueNotifier<int>(1);
 
   final String _creatorName = 'alice';
@@ -261,7 +63,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   void dispose() {
     _magnifierAnimController.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    documentRef.dispose();
+    _documentRef.dispose();
     _currentPage.dispose();
     super.dispose();
   }
@@ -284,16 +86,16 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
 
   Future<void> _openFile({int? index, bool useProgressiveLoading = true}) async {
     if (index == null) {
-      documentRef.value = null;
+      _documentRef.value = null;
     } else {
       final doc = widget.documents[index];
-      documentRef.value = doc.refBuilder(useProgressiveLoading: useProgressiveLoading);
+      _documentRef.value = doc.refBuilder(useProgressiveLoading: useProgressiveLoading);
     }
   }
 
   void _togglePageMode() {
     setState(() => _twoPageMode = !_twoPageMode);
-    WidgetsBinding.instance.addPostFrameCallback((_) => controller.invalidate());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _controller.invalidate());
   }
 
   Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle, PdfAnnotationTool tool) {
@@ -317,21 +119,21 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               isSelected: tool == PdfAnnotationTool.pen,
               selectedIcon: const Icon(Icons.edit),
               icon: const Icon(Icons.edit_outlined),
-              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.pen),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.pen),
             ),
             IconButton.filledTonal(
               tooltip: 'Highlighter',
               isSelected: tool == PdfAnnotationTool.highlighter,
               selectedIcon: const Icon(Icons.highlight),
               icon: const Icon(Icons.highlight_outlined),
-              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.highlighter),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.highlighter),
             ),
             IconButton.filledTonal(
               tooltip: 'Eraser',
               isSelected: tool == PdfAnnotationTool.eraser,
               selectedIcon: const Icon(Icons.cleaning_services),
               icon: const Icon(Icons.cleaning_services_outlined),
-              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.eraser),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.eraser),
             ),
             if (stampAvailable)
               IconButton.filledTonal(
@@ -339,71 +141,96 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 isSelected: tool == PdfAnnotationTool.stamp,
                 selectedIcon: const Icon(Icons.bookmark),
                 icon: const Icon(Icons.bookmark_border),
-                onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.stamp),
+                onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.stamp),
               ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             switch (tool) {
-              PdfAnnotationTool.pen || PdfAnnotationTool.highlighter => Row(
+              PdfAnnotationTool.pen => Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _ColorPopup(controller: controller, tool: tool),
-                  _ThicknessPopup(controller: controller, tool: tool),
+                  ColorPopup(
+                    tooltip: 'Color',
+                    palette: <ColorPopupEntry>[
+                      (color: Color(0xFFFF3B30), label: 'Red'),
+                      (color: Color(0xFF000000), label: 'Black'),
+                      (color: Color(0xFF007AFF), label: 'Blue'),
+                      (color: Color(0xFF34C759), label: 'Green'),
+                      (color: Color(0xFFFF9500), label: 'Orange'),
+                      (color: Color(0xFFAF52DE), label: 'Purple'),
+                    ],
+                    valueListenable: _controller.annotationStrokeColorListenable,
+                    onSelected: _controller.setAnnotationStrokeColor,
+                  ),
+                  StrokeThicknessPopup(
+                    tooltip: 'Pen thickness',
+                    thicknesses: const <double>[1.0, 2.0, 3.0, 5.0, 8.0],
+                    widthListenable: _controller.annotationStrokeWidthListenable,
+                    colorListenable: _controller.annotationStrokeColorListenable,
+                    onSelected: _controller.setAnnotationStrokeWidth,
+                  ),
                 ],
               ),
-              PdfAnnotationTool.eraser => _ThicknessPopup(controller: controller, tool: tool),
+              PdfAnnotationTool.highlighter => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ColorPopup(
+                    tooltip: 'Highlighter color',
+                    palette: <ColorPopupEntry>[
+                      (color: Color(0xFFFFFF00), label: 'Yellow'),
+                      (color: Color(0xFF00FF00), label: 'Green'),
+                      (color: Color(0xFFFF69B4), label: 'Pink'),
+                      (color: Color(0xFFFFA500), label: 'Orange'),
+                      (color: Color(0xFF00BFFF), label: 'Blue'),
+                    ],
+                    valueListenable: _controller.annotationHighlighterColorListenable,
+                    onSelected: _controller.setAnnotationHighlighterColor,
+                  ),
+                  StrokeThicknessPopup(
+                    tooltip: 'Highlighter thickness',
+                    thicknesses: const <double>[8.0, 12.0, 16.0, 24.0],
+                    widthListenable: _controller.annotationHighlighterWidthListenable,
+                    colorListenable: _controller.annotationHighlighterColorListenable,
+                    onSelected: _controller.setAnnotationHighlighterWidth,
+                    opacity: 0.35,
+                    iconMaxThickness: 24.0,
+                  ),
+                ],
+              ),
+              PdfAnnotationTool.eraser => EraserRadiusPopup(
+                tooltip: 'Eraser size',
+                radii: const <double>[5.0, 10.0, 20.0, 40.0],
+                radiusListenable: _controller.annotationEraserRadiusListenable,
+                onSelected: _controller.setAnnotationEraserRadius,
+              ),
               PdfAnnotationTool.stamp => const SizedBox.shrink(),
             },
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             ValueListenableBuilder<bool>(
-              valueListenable: controller.canUndoListenable,
+              valueListenable: _controller.canUndoListenable,
               builder: (context, canUndo, _) => IconButton(
                 tooltip: 'Undo',
                 icon: const Icon(Icons.undo),
-                onPressed: canUndo ? controller.undo : null,
+                onPressed: canUndo ? _controller.undo : null,
               ),
             ),
             ValueListenableBuilder<bool>(
-              valueListenable: controller.canRedoListenable,
+              valueListenable: _controller.canRedoListenable,
               builder: (context, canRedo, _) => IconButton(
                 tooltip: 'Redo',
                 icon: const Icon(Icons.redo),
-                onPressed: canRedo ? controller.redo : null,
+                onPressed: canRedo ? _controller.redo : null,
               ),
             ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             IconButton(
-              tooltip: 'Reset annotations',
-              icon: const Icon(Icons.delete_forever),
-              onPressed: _confirmResetAnnotations,
-            ),
-            IconButton(
               tooltip: 'Close',
               icon: const Icon(Icons.close),
-              onPressed: () => controller.exitAnnotationMode(),
+              onPressed: () => _controller.exitAnnotationMode(),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Future<void> _confirmResetAnnotations() async {
-    final idx = _fileIndex;
-    if (idx == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Reset annotations?'),
-        content: const Text('Delete all annotations for this document. This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete')),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    controller.clearAnnotations();
-    await widget.annotationStorage.delete(widget.documents[idx].storageKey);
   }
 
   int get _step => _twoPageMode ? 2 : 1;
@@ -423,28 +250,28 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   }
 
   void _next() {
-    if (!controller.isReady) return;
-    final next = _spreadStart(controller.pageNumber ?? 1) + _step;
-    if (next > controller.pageCount) {
+    if (!_controller.isReady) return;
+    final next = _spreadStart(_controller.pageNumber ?? 1) + _step;
+    if (next > _controller.pageCount) {
       _switchDocument(1);
     } else {
-      controller.goToPage(pageNumber: next, duration: Duration.zero);
+      _controller.goToPage(pageNumber: next, duration: Duration.zero);
     }
   }
 
   void _prev() {
-    if (!controller.isReady) return;
-    final prev = _spreadStart(controller.pageNumber ?? 1) - _step;
+    if (!_controller.isReady) return;
+    final prev = _spreadStart(_controller.pageNumber ?? 1) - _step;
     if (prev < 1) {
       _switchDocument(-1, gotoLast: true);
     } else {
-      controller.goToPage(pageNumber: prev, duration: Duration.zero);
+      _controller.goToPage(pageNumber: prev, duration: Duration.zero);
     }
   }
 
   Widget _buildPageIndicator() {
-    if (!controller.isReady) return const SizedBox.shrink();
-    final pageCount = controller.pageCount;
+    if (!_controller.isReady) return const SizedBox.shrink();
+    final pageCount = _controller.pageCount;
     final spreadCount = _twoPageMode ? (pageCount + 1) ~/ 2 : pageCount;
     if (spreadCount < 2) return const SizedBox.shrink();
     return Positioned(
@@ -475,7 +302,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     dotWidth: 8,
                     spacing: 8,
                   ),
-                  onDotClicked: (i) => controller.goToPage(
+                  onDotClicked: (i) => _controller.goToPage(
                     pageNumber: _twoPageMode ? i * 2 + 1 : i + 1,
                     duration: Duration.zero,
                   ),
@@ -509,14 +336,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
       body: Stack(
         children: [
           ValueListenableBuilder(
-            valueListenable: documentRef,
+            valueListenable: _documentRef,
             builder: (context, docRef, child) {
               if (docRef == null) {
                 return const Center(child: CircularProgressIndicator());
               }
               return PdfViewer(
                 docRef,
-                controller: controller,
+                controller: _controller,
                 params: PdfViewerParams(
                   keyHandlerParams: PdfViewerKeyHandlerParams(autofocus: true),
                   maxScale: 8,
@@ -539,7 +366,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   },
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [
                     ValueListenableBuilder<bool>(
-                      valueListenable: controller.annotationModeListenable,
+                      valueListenable: _controller.annotationModeListenable,
                       builder: (context, annotating, _) {
                         if (annotating) return const SizedBox.shrink();
                         return _buildPageIndicator();
@@ -593,7 +420,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             bottom: 32,
             left: 32,
             child: ValueListenableBuilder<bool>(
-              valueListenable: controller.annotationModeListenable,
+              valueListenable: _controller.annotationModeListenable,
               builder: (context, annotating, _) {
                 if (annotating) return const SizedBox.shrink();
                 return Column(
@@ -603,7 +430,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                     FloatingActionButton(
                       heroTag: 'annotate',
                       tooltip: 'Annotate',
-                      onPressed: () => controller.enterAnnotationMode(
+                      onPressed: () => _controller.enterAnnotationMode(
                         creatorName: _creatorName,
                       ),
                       child: const Icon(Icons.edit),
@@ -621,13 +448,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             ),
           ),
           ValueListenableBuilder<bool>(
-            valueListenable: controller.annotationModeListenable,
+            valueListenable: _controller.annotationModeListenable,
             builder: (context, annotating, _) {
               if (!annotating) return const SizedBox.shrink();
               return Positioned.fill(
                 child: DraggablePanel(
                   builder: (context, dragHandle) => ValueListenableBuilder<PdfAnnotationTool>(
-                    valueListenable: controller.annotationToolListenable,
+                    valueListenable: _controller.annotationToolListenable,
                     builder: (context, tool, _) => _buildAnnotationToolbar(dragHandle, tool),
                   ),
                 ),
@@ -635,14 +462,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
             },
           ),
           ValueListenableBuilder<bool>(
-            valueListenable: controller.annotationModeListenable,
+            valueListenable: _controller.annotationModeListenable,
             builder: (context, annotating, _) {
               final categories = _stampCategories;
               if (!annotating || categories == null || categories.isEmpty) {
                 return const SizedBox.shrink();
               }
               return ValueListenableBuilder<PdfAnnotationTool>(
-                valueListenable: controller.annotationToolListenable,
+                valueListenable: _controller.annotationToolListenable,
                 builder: (context, tool, _) {
                   // Library visibility tracks the active tool: visible
                   // when the user is in stamp mode, hidden otherwise.
@@ -679,7 +506,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                             const Divider(height: 1, thickness: 1),
                             Expanded(
                               child: StampPickerPanel(
-                                controller: controller,
+                                controller: _controller,
                                 categories: categories,
                                 stampImageBuilder: stampImageBuilder,
                               ),
@@ -696,7 +523,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
         ],
       ),
       floatingActionButton: ValueListenableBuilder<bool>(
-        valueListenable: controller.annotationModeListenable,
+        valueListenable: _controller.annotationModeListenable,
         builder: (context, annotating, _) {
           if (annotating) return const SizedBox.shrink();
           return FloatingActionButton(

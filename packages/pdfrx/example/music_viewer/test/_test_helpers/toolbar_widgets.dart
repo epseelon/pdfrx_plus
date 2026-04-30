@@ -1,6 +1,26 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:music_viewer/color_popup.dart';
+import 'package:music_viewer/eraser_radius_popup.dart';
+import 'package:music_viewer/stroke_thickness_popup.dart';
 import 'package:pdfrx/pdfrx.dart';
+
+const _penPalette = <ColorPopupEntry>[
+  (color: Color(0xFFFF3B30), label: 'Red'),
+  (color: Color(0xFF000000), label: 'Black'),
+  (color: Color(0xFF007AFF), label: 'Blue'),
+  (color: Color(0xFF34C759), label: 'Green'),
+  (color: Color(0xFFFF9500), label: 'Orange'),
+  (color: Color(0xFFAF52DE), label: 'Purple'),
+];
+
+const _highlighterPalette = <ColorPopupEntry>[
+  (color: Color(0xFFFFFF00), label: 'Yellow'),
+  (color: Color(0xFF00FF00), label: 'Green'),
+  (color: Color(0xFFFF69B4), label: 'Pink'),
+  (color: Color(0xFFFFA500), label: 'Orange'),
+  (color: Color(0xFF00BFFF), label: 'Blue'),
+];
 
 class AnnotationUndoRedoButtons extends StatelessWidget {
   const AnnotationUndoRedoButtons({
@@ -106,219 +126,54 @@ class AnnotationStylePopups extends StatelessWidget {
   Widget build(BuildContext context) {
     switch (tool) {
       case PdfAnnotationTool.pen:
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ColorPopup(
+              tooltip: 'Color',
+              palette: _penPalette,
+              valueListenable: controller.annotationStrokeColorListenable,
+              onSelected: controller.setAnnotationStrokeColor,
+            ),
+            StrokeThicknessPopup(
+              tooltip: 'Pen thickness',
+              thicknesses: const <double>[1.0, 2.0, 3.0, 5.0, 8.0],
+              widthListenable: controller.annotationStrokeWidthListenable,
+              colorListenable: controller.annotationStrokeColorListenable,
+              onSelected: controller.setAnnotationStrokeWidth,
+            ),
+          ],
+        );
       case PdfAnnotationTool.highlighter:
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _ColorPopup(controller: controller, tool: tool),
-            _ThicknessPopup(controller: controller, tool: tool),
+            ColorPopup(
+              tooltip: 'Highlighter color',
+              palette: _highlighterPalette,
+              valueListenable: controller.annotationHighlighterColorListenable,
+              onSelected: controller.setAnnotationHighlighterColor,
+            ),
+            StrokeThicknessPopup(
+              tooltip: 'Highlighter thickness',
+              thicknesses: const <double>[8.0, 12.0, 16.0, 24.0],
+              widthListenable: controller.annotationHighlighterWidthListenable,
+              colorListenable: controller.annotationHighlighterColorListenable,
+              onSelected: controller.setAnnotationHighlighterWidth,
+              opacity: 0.35,
+              iconMaxThickness: 24.0,
+            ),
           ],
         );
       case PdfAnnotationTool.eraser:
-        return _ThicknessPopup(controller: controller, tool: tool);
-      case PdfAnnotationTool.stamp:
-        return const SizedBox.shrink();
-    }
-  }
-}
-
-class _ColorPopup extends StatelessWidget {
-  const _ColorPopup({required this.controller, required this.tool});
-
-  final PdfViewerController controller;
-  final PdfAnnotationTool tool;
-
-  static const _penPalette = <Color>[
-    Color(0xFFFF3B30),
-    Color(0xFF000000),
-    Color(0xFF007AFF),
-    Color(0xFF34C759),
-    Color(0xFFFF9500),
-    Color(0xFFAF52DE),
-  ];
-  static const _highlighterPalette = <Color>[
-    Color(0xFFFFFF00),
-    Color(0xFF00FF00),
-    Color(0xFFFF69B4),
-    Color(0xFFFFA500),
-    Color(0xFF00BFFF),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final isHighlighter = tool == PdfAnnotationTool.highlighter;
-    final listenable = isHighlighter
-        ? controller.annotationHighlighterColorListenable
-        : controller.annotationStrokeColorListenable;
-    final ValueChanged<Color> onSelected = isHighlighter
-        ? controller.setAnnotationHighlighterColor
-        : controller.setAnnotationStrokeColor;
-    final palette = isHighlighter ? _highlighterPalette : _penPalette;
-    final tooltip = isHighlighter ? 'Highlighter color' : 'Color';
-    return ValueListenableBuilder<Color>(
-      valueListenable: listenable,
-      builder: (context, current, _) => PopupMenuButton<Color>(
-        tooltip: tooltip,
-        icon: Icon(Icons.circle, color: current),
-        onSelected: onSelected,
-        itemBuilder: (context) => [
-          for (final c in palette)
-            CheckedPopupMenuItem<Color>(
-              value: c,
-              checked: c == current,
-              child: Row(
-                children: [
-                  Icon(Icons.circle, color: c, size: 20),
-                  const SizedBox(width: 8),
-                  Text(_colorLabel(c)),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  static String _colorLabel(Color c) {
-    if (c == const Color(0xFFFF3B30)) return 'Red';
-    if (c == const Color(0xFF000000)) return 'Black';
-    if (c == const Color(0xFF007AFF)) return 'Blue';
-    if (c == const Color(0xFF34C759)) return 'Green';
-    if (c == const Color(0xFFFF9500)) return 'Orange';
-    if (c == const Color(0xFFAF52DE)) return 'Purple';
-    if (c == const Color(0xFFFFFF00)) return 'Yellow';
-    if (c == const Color(0xFF00FF00)) return 'Green';
-    if (c == const Color(0xFFFF69B4)) return 'Pink';
-    if (c == const Color(0xFFFFA500)) return 'Orange';
-    if (c == const Color(0xFF00BFFF)) return 'Blue';
-    return 'Custom';
-  }
-}
-
-class _ThicknessPopup extends StatelessWidget {
-  const _ThicknessPopup({required this.controller, required this.tool});
-
-  final PdfViewerController controller;
-  final PdfAnnotationTool tool;
-
-  static const _penThicknesses = <double>[1.0, 2.0, 3.0, 5.0, 8.0];
-  static const _highlighterThicknesses = <double>[8.0, 12.0, 16.0, 24.0];
-  static const _eraserSizes = <double>[5.0, 10.0, 20.0, 40.0];
-
-  @override
-  Widget build(BuildContext context) {
-    switch (tool) {
-      case PdfAnnotationTool.pen:
-        return ValueListenableBuilder<Color>(
-          valueListenable: controller.annotationStrokeColorListenable,
-          builder: (context, color, _) => ValueListenableBuilder<double>(
-            valueListenable: controller.annotationStrokeWidthListenable,
-            builder: (context, current, _) => PopupMenuButton<double>(
-              tooltip: 'Pen thickness',
-              icon: _strokePreview(current, color, width: 22),
-              onSelected: controller.setAnnotationStrokeWidth,
-              itemBuilder: (context) => [
-                for (final w in _penThicknesses)
-                  CheckedPopupMenuItem<double>(
-                    value: w,
-                    checked: w == current,
-                    child: Row(
-                      children: [
-                        _strokePreview(w, color),
-                        const SizedBox(width: 12),
-                        Text('${w.toStringAsFixed(1)} pt'),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      case PdfAnnotationTool.highlighter:
-        return ValueListenableBuilder<Color>(
-          valueListenable: controller.annotationHighlighterColorListenable,
-          builder: (context, color, _) => ValueListenableBuilder<double>(
-            valueListenable: controller.annotationHighlighterWidthListenable,
-            builder: (context, current, _) => PopupMenuButton<double>(
-              tooltip: 'Highlighter thickness',
-              icon: _strokePreview(current.clamp(0.0, 24.0), color, width: 22, opacity: 0.35),
-              onSelected: controller.setAnnotationHighlighterWidth,
-              itemBuilder: (context) => [
-                for (final w in _highlighterThicknesses)
-                  CheckedPopupMenuItem<double>(
-                    value: w,
-                    checked: w == current,
-                    child: Row(
-                      children: [
-                        _strokePreview(w, color, opacity: 0.35),
-                        const SizedBox(width: 12),
-                        Text('${w.toStringAsFixed(1)} pt'),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
+        return EraserRadiusPopup(
+          tooltip: 'Eraser size',
+          radii: const <double>[5.0, 10.0, 20.0, 40.0],
+          radiusListenable: controller.annotationEraserRadiusListenable,
+          onSelected: controller.setAnnotationEraserRadius,
         );
       case PdfAnnotationTool.stamp:
         return const SizedBox.shrink();
-      case PdfAnnotationTool.eraser:
-        final borderColor = Theme.of(context).colorScheme.onSurface;
-        return ValueListenableBuilder<double>(
-          valueListenable: controller.annotationEraserRadiusListenable,
-          builder: (context, current, _) => PopupMenuButton<double>(
-            tooltip: 'Eraser size',
-            icon: _eraserPreview(current.clamp(4, 22), borderColor, box: 22),
-            onSelected: controller.setAnnotationEraserRadius,
-            itemBuilder: (context) => [
-              for (final r in _eraserSizes)
-                CheckedPopupMenuItem<double>(
-                  value: r,
-                  checked: r == current,
-                  child: Row(
-                    children: [
-                      _eraserPreview(r, borderColor),
-                      const SizedBox(width: 12),
-                      Text('${r.toStringAsFixed(0)} pt'),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        );
     }
-  }
-
-  Widget _strokePreview(double thickness, Color color, {double width = 60, double opacity = 1.0}) => SizedBox(
-    width: width,
-    height: 12,
-    child: Center(
-      child: Container(
-        width: width,
-        height: thickness,
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: opacity),
-          borderRadius: BorderRadius.circular(thickness / 2),
-        ),
-      ),
-    ),
-  );
-
-  Widget _eraserPreview(double size, Color borderColor, {double box = 48}) {
-    final diameter = size.clamp(0, box);
-    return SizedBox(
-      width: box,
-      height: box,
-      child: Center(
-        child: Container(
-          width: diameter.toDouble(),
-          height: diameter.toDouble(),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: borderColor, width: 1.5),
-          ),
-        ),
-      ),
-    );
   }
 }
