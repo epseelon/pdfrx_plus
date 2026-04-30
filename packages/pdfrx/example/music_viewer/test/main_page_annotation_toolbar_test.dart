@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:music_viewer/main_page.dart';
 import 'package:pdfrx/pdfrx.dart';
+
+import '_test_helpers/toolbar_widgets.dart';
 
 class _StubHistory {
   final canUndo = ValueNotifier<bool>(false);

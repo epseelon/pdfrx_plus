@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:smooth_page_indicator/smooth_page_indicator.dart';
@@ -27,149 +26,6 @@ class MainPage extends StatefulWidget {
 
   @override
   State<MainPage> createState() => _MainPageState();
-}
-
-/// Undo/Redo button pair in the annotation toolbar. Stable selectors are
-/// the tooltip strings `'Undo'` and `'Redo'` — keep these in sync with
-/// the toolbar widget test.
-class AnnotationUndoRedoButtons extends StatelessWidget {
-  const AnnotationUndoRedoButtons({
-    required this.canUndoListenable,
-    required this.canRedoListenable,
-    required this.onUndo,
-    required this.onRedo,
-    super.key,
-  });
-
-  final ValueListenable<bool> canUndoListenable;
-  final ValueListenable<bool> canRedoListenable;
-  final VoidCallback onUndo;
-  final VoidCallback onRedo;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ValueListenableBuilder<bool>(
-          valueListenable: canUndoListenable,
-          builder: (context, canUndo, _) => IconButton(
-            tooltip: 'Undo',
-            icon: const Icon(Icons.undo),
-            onPressed: canUndo ? onUndo : null,
-          ),
-        ),
-        ValueListenableBuilder<bool>(
-          valueListenable: canRedoListenable,
-          builder: (context, canRedo, _) => IconButton(
-            tooltip: 'Redo',
-            icon: const Icon(Icons.redo),
-            onPressed: canRedo ? onRedo : null,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// Pen / Highlighter / Eraser / (optional) Stamp tool selector row.
-/// Stable selectors are the tooltip strings `'Pen'`, `'Highlighter'`,
-/// `'Eraser'`, and `'Stamp'` — keep these in sync with the toolbar
-/// widget test. The Stamp button is rendered only when [stampAvailable]
-/// is `true` (i.e. the host configured a non-empty stamp library).
-class AnnotationToolButtons extends StatelessWidget {
-  const AnnotationToolButtons({
-    required this.toolListenable,
-    required this.onSelectTool,
-    this.stampAvailable = false,
-    super.key,
-  });
-
-  final ValueListenable<PdfAnnotationTool> toolListenable;
-  final ValueChanged<PdfAnnotationTool> onSelectTool;
-  final bool stampAvailable;
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<PdfAnnotationTool>(
-      valueListenable: toolListenable,
-      builder: (context, tool, _) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton.filledTonal(
-            tooltip: 'Pen',
-            isSelected: tool == PdfAnnotationTool.pen,
-            selectedIcon: const Icon(Icons.edit),
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () => onSelectTool(PdfAnnotationTool.pen),
-          ),
-          IconButton.filledTonal(
-            tooltip: 'Highlighter',
-            isSelected: tool == PdfAnnotationTool.highlighter,
-            selectedIcon: const Icon(Icons.highlight),
-            icon: const Icon(Icons.highlight_outlined),
-            onPressed: () => onSelectTool(PdfAnnotationTool.highlighter),
-          ),
-          IconButton.filledTonal(
-            tooltip: 'Eraser',
-            isSelected: tool == PdfAnnotationTool.eraser,
-            selectedIcon: const Icon(Icons.cleaning_services),
-            icon: const Icon(Icons.cleaning_services_outlined),
-            onPressed: () => onSelectTool(PdfAnnotationTool.eraser),
-          ),
-          if (stampAvailable)
-            IconButton.filledTonal(
-              tooltip: 'Stamp',
-              isSelected: tool == PdfAnnotationTool.stamp,
-              selectedIcon: const Icon(Icons.bookmark),
-              icon: const Icon(Icons.bookmark_border),
-              onPressed: () => onSelectTool(PdfAnnotationTool.stamp),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The pair of popup buttons (color + thickness, or eraser-radius) shown
-/// in the annotation toolbar. The contents change with [tool]:
-///
-/// * [PdfAnnotationTool.pen] — pen color popup + pen thickness popup
-///   (tooltips `'Color'` / `'Pen thickness'`).
-/// * [PdfAnnotationTool.highlighter] — highlighter color popup +
-///   highlighter thickness popup (tooltips `'Highlighter color'` /
-///   `'Highlighter thickness'`).
-/// * [PdfAnnotationTool.eraser] — eraser-size popup only
-///   (tooltip `'Eraser size'`).
-///
-/// Tooltips are stable selectors used by the toolbar widget test.
-class AnnotationStylePopups extends StatelessWidget {
-  const AnnotationStylePopups({required this.controller, required this.tool, super.key});
-
-  final PdfViewerController controller;
-  final PdfAnnotationTool tool;
-
-  @override
-  Widget build(BuildContext context) {
-    switch (tool) {
-      case PdfAnnotationTool.pen:
-      case PdfAnnotationTool.highlighter:
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _ColorPopup(controller: controller, tool: tool),
-            _ThicknessPopup(controller: controller, tool: tool),
-          ],
-        );
-      case PdfAnnotationTool.eraser:
-        return _ThicknessPopup(controller: controller, tool: tool);
-      case PdfAnnotationTool.stamp:
-        // The stamp library is mounted as its own floating
-        // `DraggablePanel` keyed off the active tool, so the toolbar's
-        // style row has nothing to add for the stamp tool.
-        return const SizedBox.shrink();
-    }
-  }
 }
 
 class _ColorPopup extends StatelessWidget {
@@ -311,10 +167,6 @@ class _ThicknessPopup extends StatelessWidget {
           ),
         );
       case PdfAnnotationTool.stamp:
-        // The stamp tool's style row is rendered by AnnotationStylePopups
-        // directly (a single picker-toggle button). _ThicknessPopup is
-        // not invoked for stamps; return an empty widget defensively in
-        // case a host wires it incorrectly.
         return const SizedBox.shrink();
       case PdfAnnotationTool.eraser:
         final borderColor = Theme.of(context).colorScheme.onSurface;
@@ -445,6 +297,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   }
 
   Widget _buildAnnotationToolbar(DragHandleBuilder dragHandle, PdfAnnotationTool tool) {
+    final stampAvailable = _stampCategories?.isNotEmpty ?? false;
     return Material(
       elevation: 8,
       color: Theme.of(context).colorScheme.surface,
@@ -459,19 +312,63 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 child: Tooltip(message: 'Drag to move', child: Icon(Icons.drag_indicator)),
               ),
             ),
-            AnnotationToolButtons(
-              toolListenable: controller.annotationToolListenable,
-              onSelectTool: controller.setAnnotationTool,
-              stampAvailable: (_stampCategories?.isNotEmpty ?? false),
+            IconButton.filledTonal(
+              tooltip: 'Pen',
+              isSelected: tool == PdfAnnotationTool.pen,
+              selectedIcon: const Icon(Icons.edit),
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.pen),
             ),
+            IconButton.filledTonal(
+              tooltip: 'Highlighter',
+              isSelected: tool == PdfAnnotationTool.highlighter,
+              selectedIcon: const Icon(Icons.highlight),
+              icon: const Icon(Icons.highlight_outlined),
+              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.highlighter),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Eraser',
+              isSelected: tool == PdfAnnotationTool.eraser,
+              selectedIcon: const Icon(Icons.cleaning_services),
+              icon: const Icon(Icons.cleaning_services_outlined),
+              onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.eraser),
+            ),
+            if (stampAvailable)
+              IconButton.filledTonal(
+                tooltip: 'Stamp',
+                isSelected: tool == PdfAnnotationTool.stamp,
+                selectedIcon: const Icon(Icons.bookmark),
+                icon: const Icon(Icons.bookmark_border),
+                onPressed: () => controller.setAnnotationTool(PdfAnnotationTool.stamp),
+              ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
-            AnnotationStylePopups(controller: controller, tool: tool),
+            switch (tool) {
+              PdfAnnotationTool.pen || PdfAnnotationTool.highlighter => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _ColorPopup(controller: controller, tool: tool),
+                  _ThicknessPopup(controller: controller, tool: tool),
+                ],
+              ),
+              PdfAnnotationTool.eraser => _ThicknessPopup(controller: controller, tool: tool),
+              PdfAnnotationTool.stamp => const SizedBox.shrink(),
+            },
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
-            AnnotationUndoRedoButtons(
-              canUndoListenable: controller.canUndoListenable,
-              canRedoListenable: controller.canRedoListenable,
-              onUndo: controller.undo,
-              onRedo: controller.redo,
+            ValueListenableBuilder<bool>(
+              valueListenable: controller.canUndoListenable,
+              builder: (context, canUndo, _) => IconButton(
+                tooltip: 'Undo',
+                icon: const Icon(Icons.undo),
+                onPressed: canUndo ? controller.undo : null,
+              ),
+            ),
+            ValueListenableBuilder<bool>(
+              valueListenable: controller.canRedoListenable,
+              builder: (context, canRedo, _) => IconButton(
+                tooltip: 'Redo',
+                icon: const Icon(Icons.redo),
+                onPressed: canRedo ? controller.redo : null,
+              ),
             ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             IconButton(

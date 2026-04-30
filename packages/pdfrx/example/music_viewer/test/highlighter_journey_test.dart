@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:music_viewer/main_page.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_controller.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_layer.dart';
 
 import '_test_helpers/fake_pdf_page.dart';
+import '_test_helpers/toolbar_widgets.dart';
 
 /// Journey test: tap Highlighter via the toolbar's stable tooltip
 /// selector, drag a programmatic pan on the [PdfAnnotationLayer] in
@@ -15,7 +15,7 @@ import '_test_helpers/fake_pdf_page.dart';
 /// the configured opacity, and the selected highlighter width.
 ///
 /// We deliberately mount only the toolbar + the annotation layer (with
-/// a fake [PdfPage]) instead of the full [MainPage] — building a real
+/// a fake [PdfPage]) instead of the full `MainPage` — building a real
 /// `PdfDocumentRef` for a journey test is impractical. This follows
 /// the precedent set by `AnnotationUndoRedoButtons` in
 /// `main_page_annotation_toolbar_test.dart`.
