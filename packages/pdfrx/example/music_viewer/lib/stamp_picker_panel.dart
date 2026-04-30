@@ -21,7 +21,7 @@ import 'package:pdfrx/pdfrx.dart';
 /// scrollable content fills the available constraints, so the picker
 /// works equally well inside a fixed-size box (e.g. a resizable
 /// floating panel) or as a flex child via `Expanded`.
-class StampPickerPanel extends StatelessWidget {
+class StampPickerPanel extends StatefulWidget {
   const StampPickerPanel({
     required this.controller,
     required this.categories,
@@ -34,24 +34,44 @@ class StampPickerPanel extends StatelessWidget {
   final PdfStampImageBuilder stampImageBuilder;
 
   @override
+  State<StampPickerPanel> createState() => _StampPickerPanelState();
+}
+
+class _StampPickerPanelState extends State<StampPickerPanel> {
+  // Held by the panel so the always-visible Scrollbar can attach to the
+  // SingleChildScrollView's Scrollable.
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final sortedCategories = [...categories]..sort((a, b) => a.id.compareTo(b.id));
+    final sortedCategories = [...widget.categories]..sort((a, b) => a.id.compareTo(b.id));
     return ValueListenableBuilder<PdfStampDefinition?>(
-      valueListenable: controller.pendingStampListenable,
-      builder: (context, pending, _) => SingleChildScrollView(
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final category in sortedCategories)
-              _StampCategorySection(
-                category: category,
-                pending: pending,
-                onTap: controller.setPendingStamp,
-                stampImageBuilder: stampImageBuilder,
-              ),
-          ],
+      valueListenable: widget.controller.pendingStampListenable,
+      builder: (context, pending, _) => Scrollbar(
+        controller: _scrollController,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final category in sortedCategories)
+                _StampCategorySection(
+                  category: category,
+                  pending: pending,
+                  onTap: widget.controller.setPendingStamp,
+                  stampImageBuilder: widget.stampImageBuilder,
+                ),
+            ],
+          ),
         ),
       ),
     );

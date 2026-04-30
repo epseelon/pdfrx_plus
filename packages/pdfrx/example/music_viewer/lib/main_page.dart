@@ -494,12 +494,41 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             dragHandle(
-                              Container(
+                              SizedBox(
                                 height: 28,
-                                alignment: Alignment.center,
-                                child: const Tooltip(
+                                child: Tooltip(
                                   message: 'Drag to move',
-                                  child: Icon(Icons.drag_indicator),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                                      spacing: 3,
+                                      children: [
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                        Container(
+                                          height: 2,
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(1.5),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
