@@ -151,9 +151,6 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
               _controller.selectedStampIdListenable,
             ]),
             builder: (context, _) {
-              final committed = _controller.strokes
-                  .where((s) => s.pageIndex == _page.pageNumber - 1)
-                  .toList(growable: false);
               final pageStamps = _controller.stamps
                   .where((s) => s.pageIndex == _page.pageNumber - 1)
                   .toList(growable: false);
@@ -166,16 +163,18 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
+                  // Ink strokes (pen + highlighter) are painted on the
+                  // page canvas by the `PdfViewer` page painter so the
+                  // highlighter can multiply-blend with the page
+                  // content. This painter only renders the transient
+                  // eraser cursor preview.
                   CustomPaint(
-                    painter: InkPainter(
-                      strokes: committed,
-                      inFlightProvider: () => _controller.inFlightStrokesFor(_page.pageNumber - 1),
+                    painter: EraserCursorPainter(
                       eraserCursorProvider: () => _controller.eraserCursorPageIndex == _page.pageNumber - 1
                           ? _controller.eraserCursorPdfPoint
                           : null,
                       eraserRadiusProvider: () => _controller.eraserRadius,
                       repaint: Listenable.merge([
-                        _controller.inFlightChangedListenable,
                         _controller.eraserCursorChangedListenable,
                         _controller.eraserRadiusListenable,
                       ]),
@@ -725,11 +724,121 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       Offset(local.dx * _page.width / _pageRect.width, local.dy * _page.height / _pageRect.height);
 }
 
+/// Builds the quadratic-bezier-smoothed [Path] for an ink stroke,
+/// scaling [pointsInPdfSpace] from PDF point space into canvas pixels.
+///
+/// A naive `moveTo + lineTo*` polyline draws every recorded point
+/// verbatim, including any "lift-off" jitter at the end of a touch
+/// stroke (sparse trailing points after a dense traced shape). Pspdfkit
+/// and most natural-ink renderers smooth ink at draw time, which both
+/// softens the visual and absorbs the prominence of sparse trailing
+/// points whose direction differs from the surrounding curve.
+///
+/// Algorithm: for each interior point `p[i]` (i in [1, len-2]), draw a
+/// quadratic Bezier whose control point is `p[i]` itself and whose
+/// endpoint is the midpoint of `p[i]` and `p[i+1]`. The path therefore
+/// passes through the midpoints, with the original points pulling the
+/// curve toward them as control points. The final segment is a
+/// straight line to the actual last point so the curve terminates
+/// exactly where the polyline ends.
+///
+/// [pointsInPdfSpace] must be non-empty.
 @visibleForTesting
-class InkPainter extends CustomPainter {
-  InkPainter({
-    required this.strokes,
-    required this.inFlightProvider,
+Path buildInkStrokePath(List<Offset> pointsInPdfSpace, {required double scaleX, required double scaleY}) {
+  final points = pointsInPdfSpace;
+  final path = Path()..moveTo(points.first.dx * scaleX, points.first.dy * scaleY);
+  if (points.length == 1) {
+    // Single-point segment: a tap with no drag, or a 1-point in-flight
+    // stroke. Drawing a zero-length line at the same point produces a
+    // round-capped dot of diameter `lineWidth` — pspdfkit's "marker
+    // tap" rendering. Works for both pen and highlighter since both
+    // use round caps.
+    path.lineTo(points.first.dx * scaleX, points.first.dy * scaleY);
+  } else if (points.length == 2) {
+    path.lineTo(points[1].dx * scaleX, points[1].dy * scaleY);
+  } else {
+    for (var i = 1; i < points.length - 1; i++) {
+      final cx = points[i].dx * scaleX;
+      final cy = points[i].dy * scaleY;
+      final mx = (points[i].dx + points[i + 1].dx) * 0.5 * scaleX;
+      final my = (points[i].dy + points[i + 1].dy) * 0.5 * scaleY;
+      path.quadraticBezierTo(cx, cy, mx, my);
+    }
+    path.lineTo(points.last.dx * scaleX, points.last.dy * scaleY);
+  }
+  return path;
+}
+
+/// Paints a single ink stroke onto [canvas], scaling from PDF point
+/// space by [scaleX]/[scaleY].
+///
+/// Both pen and highlighter use round caps + round joins. Highlighter
+/// is differentiated by opacity, (typically) larger lineWidth, and
+/// [BlendMode.multiply] — not by stroke geometry. Matching pspdfkit's
+/// render: highlighter strokes have rounded ends — like a wide-tipped
+/// marker — rather than the butt/miter "ruler-edge" look that an
+/// earlier prototype shipped.
+///
+/// The highlighter's [BlendMode.multiply] only tints the page content
+/// (rather than covering it) when [canvas] already holds the page
+/// bitmap underneath — i.e. when called via [paintPageInkAnnotations]
+/// from the `PdfViewer` page painter.
+@visibleForTesting
+void paintInkStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {
+  final points = stroke.pointsInPdfSpace;
+  if (points.isEmpty) return;
+  final paint = Paint()
+    ..style = PaintingStyle.stroke
+    ..color = stroke.strokeColor.withValues(alpha: stroke.opacity)
+    ..strokeWidth = stroke.lineWidth * scaleX
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round;
+  if (stroke.kind == PdfInkAnnotationKind.highlighter) {
+    paint.blendMode = BlendMode.multiply;
+  }
+  canvas.drawPath(buildInkStrokePath(points, scaleX: scaleX, scaleY: scaleY), paint);
+}
+
+/// Paints every committed and in-flight ink stroke anchored to [page]
+/// onto [canvas], positioned and clipped to [pageRect].
+///
+/// Called from the `PdfViewer` page painter so strokes share the page
+/// bitmap's canvas: this is what lets highlighter strokes
+/// ([BlendMode.multiply]) tint the underlying page content instead of
+/// covering it. Pen and highlighter strokes are drawn in creation
+/// order; in-flight strokes are drawn last (on top).
+void paintPageInkAnnotations(
+  Canvas canvas, {
+  required Rect pageRect,
+  required PdfPage page,
+  required PdfAnnotationController controller,
+}) {
+  final pageIndex = page.pageNumber - 1;
+  final committed = controller.strokes.where((s) => s.pageIndex == pageIndex).toList(growable: false);
+  final inFlight = controller.inFlightStrokesFor(pageIndex).toList(growable: false);
+  if (committed.isEmpty && inFlight.isEmpty) return;
+  final scaleX = pageRect.width / page.width;
+  final scaleY = pageRect.height / page.height;
+  canvas.save();
+  canvas.translate(pageRect.left, pageRect.top);
+  // Strokes that extend past the page bounds are visually clipped.
+  canvas.clipRect(Offset.zero & pageRect.size);
+  for (final stroke in committed) {
+    paintInkStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
+  }
+  for (final stroke in inFlight) {
+    paintInkStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
+  }
+  canvas.restore();
+}
+
+/// Paints the eraser tool's circular cursor preview onto the annotation
+/// layer. Ink strokes themselves are painted on the page canvas by
+/// [paintPageInkAnnotations]; this painter only renders the transient
+/// eraser affordance.
+@visibleForTesting
+class EraserCursorPainter extends CustomPainter {
+  EraserCursorPainter({
     required this.eraserCursorProvider,
     required this.eraserRadiusProvider,
     required Listenable repaint,
@@ -737,8 +846,6 @@ class InkPainter extends CustomPainter {
     required this.pageHeight,
   }) : super(repaint: repaint);
 
-  final List<PdfInkAnnotation> strokes;
-  final Iterable<PdfInkAnnotation> Function() inFlightProvider;
   final Offset? Function() eraserCursorProvider;
   final double Function() eraserRadiusProvider;
   final double pageWidth;
@@ -746,23 +853,12 @@ class InkPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final cursor = eraserCursorProvider();
+    if (cursor == null) return;
     canvas.clipRect(Offset.zero & size);
     final scaleX = size.width / pageWidth;
     final scaleY = size.height / pageHeight;
-    for (final stroke in strokes) {
-      _paintStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
-    }
-    for (final stroke in inFlightProvider()) {
-      _paintStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
-    }
-    final cursor = eraserCursorProvider();
-    if (cursor != null) {
-      _paintEraserCursor(canvas, cursor, scaleX: scaleX, scaleY: scaleY);
-    }
-  }
-
-  void _paintEraserCursor(Canvas canvas, Offset pdfPoint, {required double scaleX, required double scaleY}) {
-    final center = Offset(pdfPoint.dx * scaleX, pdfPoint.dy * scaleY);
+    final center = Offset(cursor.dx * scaleX, cursor.dy * scaleY);
     final radius = eraserRadiusProvider() * scaleX;
     final outer = Paint()
       ..style = PaintingStyle.stroke
@@ -776,62 +872,6 @@ class InkPainter extends CustomPainter {
     canvas.drawCircle(center, radius, inner);
   }
 
-  void _paintStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {
-    // Both pen and highlighter use round caps + round joins. Highlighter
-    // is differentiated by opacity and (typically) larger lineWidth, not
-    // by stroke geometry. Matching pspdfkit's render: highlighter strokes
-    // have rounded ends — like a wide-tipped marker — rather than the
-    // butt/miter "ruler-edge" look that an earlier prototype shipped.
-    final (cap, join) = (StrokeCap.round, StrokeJoin.round);
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..color = stroke.strokeColor.withValues(alpha: stroke.opacity)
-      ..strokeWidth = stroke.lineWidth * scaleX
-      ..strokeCap = cap
-      ..strokeJoin = join;
-    final points = stroke.pointsInPdfSpace;
-    if (points.isEmpty) return;
-
-    // Quadratic Bezier path smoothing.
-    //
-    // A naive `moveTo + lineTo*` polyline draws every recorded point
-    // verbatim, including any "lift-off" jitter at the end of a touch
-    // stroke (sparse trailing points after a dense traced shape). Pspdfkit
-    // and most natural-ink renderers smooth ink at draw time, which both
-    // softens the visual and absorbs the prominence of sparse trailing
-    // points whose direction differs from the surrounding curve.
-    //
-    // Algorithm: for each interior point `p[i]` (i in [1, len-2]), draw a
-    // quadratic Bezier whose control point is `p[i]` itself and whose
-    // endpoint is the midpoint of `p[i]` and `p[i+1]`. The path therefore
-    // passes through the midpoints, with the original points pulling the
-    // curve toward them as control points. The final segment is a
-    // straight line to the actual last point so the curve terminates
-    // exactly where the polyline ends.
-    final path = Path()..moveTo(points.first.dx * scaleX, points.first.dy * scaleY);
-    if (points.length == 1) {
-      // Single-point segment: a tap with no drag, or a 1-point in-flight
-      // stroke. Drawing a zero-length line at the same point produces a
-      // round-capped dot of diameter `lineWidth` — pspdfkit's "marker
-      // tap" rendering. Works for both pen and highlighter since both
-      // now use round caps.
-      path.lineTo(points.first.dx * scaleX, points.first.dy * scaleY);
-    } else if (points.length == 2) {
-      path.lineTo(points[1].dx * scaleX, points[1].dy * scaleY);
-    } else {
-      for (var i = 1; i < points.length - 1; i++) {
-        final cx = points[i].dx * scaleX;
-        final cy = points[i].dy * scaleY;
-        final mx = (points[i].dx + points[i + 1].dx) * 0.5 * scaleX;
-        final my = (points[i].dy + points[i + 1].dy) * 0.5 * scaleY;
-        path.quadraticBezierTo(cx, cy, mx, my);
-      }
-      path.lineTo(points.last.dx * scaleX, points.last.dy * scaleY);
-    }
-    canvas.drawPath(path, paint);
-  }
-
   @override
-  bool shouldRepaint(InkPainter old) =>
-      !identical(old.strokes, strokes) || old.pageWidth != pageWidth || old.pageHeight != pageHeight;
+  bool shouldRepaint(EraserCursorPainter old) => old.pageWidth != pageWidth || old.pageHeight != pageHeight;
 }

@@ -304,6 +304,15 @@ class _PdfViewerState extends State<PdfViewer>
     if (mounted) setState(() {});
   }
 
+  /// Repaints the page canvas when ink annotations change. Pen and
+  /// highlighter strokes are painted onto the page canvas (so the
+  /// highlighter can multiply-blend with the page content), so the
+  /// canvas must be invalidated as strokes are drawn, committed,
+  /// erased, undone, redone, imported, or cleared.
+  void _onAnnotationContentChanged() {
+    if (mounted) _invalidate();
+  }
+
   bool get _effectivePanEnabled =>
       widget.params.panEnabled && !(_annotationController?.annotationModeListenable.value ?? false);
 
@@ -2469,6 +2478,14 @@ class _PdfViewerState extends State<PdfViewer>
         for (final callback in widget.params.pagePaintCallbacks!) {
           callback(canvas, rect, page);
         }
+      }
+
+      // Ink annotations (pen + highlighter) are painted on the page
+      // canvas — after the page bitmap — so highlighter strokes can
+      // multiply-blend with the page content rather than covering it.
+      final annotationController = _annotationController;
+      if (annotationController != null) {
+        paintPageInkAnnotations(canvas, pageRect: rect, page: page, controller: annotationController);
       }
     }
 
@@ -4921,11 +4938,19 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     if (__state != null) {
       __state!._txController.removeListener(_notifyListeners);
       _annotationController.annotationModeListenable.removeListener(__state!._onAnnotationModeChanged);
+      _annotationController.removeListener(__state!._onAnnotationContentChanged);
+      _annotationController.inFlightChangedListenable.removeListener(__state!._onAnnotationContentChanged);
     }
     __state = state;
     if (__state != null) {
       __state!._txController.addListener(_notifyListeners);
       _annotationController.annotationModeListenable.addListener(__state!._onAnnotationModeChanged);
+      // Committed-stroke changes (commit / erase / undo / redo / import
+      // / clear) fire on the controller itself; per-point updates while
+      // a stroke is being drawn fire on `inFlightChangedListenable`.
+      // Both must repaint the page canvas where strokes are drawn.
+      _annotationController.addListener(__state!._onAnnotationContentChanged);
+      _annotationController.inFlightChangedListenable.addListener(__state!._onAnnotationContentChanged);
     }
   }
 
