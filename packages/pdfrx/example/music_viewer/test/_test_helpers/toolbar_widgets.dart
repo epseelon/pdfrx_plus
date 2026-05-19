@@ -82,6 +82,15 @@ class AnnotationToolButtons extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton.filledTonal(
+            key: const Key('annotationToolHand'),
+            tooltip: 'Hand',
+            isSelected: tool == PdfAnnotationTool.hand,
+            selectedIcon: const Icon(Icons.back_hand),
+            icon: const Icon(Icons.back_hand_outlined),
+            onPressed: () => onSelectTool(PdfAnnotationTool.hand),
+          ),
+          const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
+          IconButton.filledTonal(
             tooltip: 'Pen',
             isSelected: tool == PdfAnnotationTool.pen,
             selectedIcon: const Icon(Icons.edit),

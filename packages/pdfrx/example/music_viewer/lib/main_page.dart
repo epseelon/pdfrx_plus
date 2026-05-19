@@ -13,6 +13,46 @@ import 'stamp_library.dart';
 import 'stamp_picker_panel.dart';
 import 'stroke_thickness_popup.dart';
 
+/// Whether viewer navigation (page indicator, tap-to-flip) is available.
+/// True when annotation mode is off, or when it is on with the hand
+/// (navigation) tool active — drawing tools suppress navigation.
+bool annotationNavigationAvailable(bool annotating, PdfAnnotationTool tool) =>
+    !annotating || tool == PdfAnnotationTool.hand;
+
+/// Outcome of a `_next` / `_prev` page-step request.
+enum PageStepOutcome {
+  /// Move within the current document to the planned page.
+  goToPage,
+
+  /// Cross to the adjacent document (annotation mode off only).
+  switchDocument,
+
+  /// At a document boundary with annotation mode on — no-op.
+  stayAtBoundary,
+}
+
+/// Pure planner for a page step. [step] is positive for forward, negative
+/// for backward. While annotation mode is active a boundary crossing is
+/// confined to the current document ([PageStepOutcome.stayAtBoundary])
+/// instead of switching documents.
+({PageStepOutcome outcome, int page}) planPageStep({
+  required int currentSpreadStart,
+  required int step,
+  required int pageCount,
+  required bool annotating,
+}) {
+  final target = currentSpreadStart + step;
+  final crossesForward = step > 0 && target > pageCount;
+  final crossesBackward = step < 0 && target < 1;
+  if (crossesForward || crossesBackward) {
+    return (
+      outcome: annotating ? PageStepOutcome.stayAtBoundary : PageStepOutcome.switchDocument,
+      page: target,
+    );
+  }
+  return (outcome: PageStepOutcome.goToPage, page: target);
+}
+
 class MainPage extends StatefulWidget {
   const MainPage({
     required this.documents,
@@ -117,6 +157,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 ),
               ),
             ),
+            IconButton.filledTonal(
+              key: const Key('annotationToolHand'),
+              tooltip: 'Hand',
+              isSelected: tool == PdfAnnotationTool.hand,
+              selectedIcon: const Icon(Icons.back_hand),
+              icon: const Icon(Icons.back_hand_outlined),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.hand),
+            ),
+            const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             IconButton.filledTonal(
               tooltip: 'Pen',
               isSelected: tool == PdfAnnotationTool.pen,
@@ -256,21 +305,37 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
 
   void _next() {
     if (!_controller.isReady) return;
-    final next = _spreadStart(_controller.pageNumber ?? 1) + _step;
-    if (next > _controller.pageCount) {
-      _switchDocument(1);
-    } else {
-      _controller.goToPage(pageNumber: next, duration: Duration.zero);
+    final plan = planPageStep(
+      currentSpreadStart: _spreadStart(_controller.pageNumber ?? 1),
+      step: _step,
+      pageCount: _controller.pageCount,
+      annotating: _controller.annotationModeListenable.value,
+    );
+    switch (plan.outcome) {
+      case PageStepOutcome.goToPage:
+        _controller.goToPage(pageNumber: plan.page, duration: Duration.zero);
+      case PageStepOutcome.switchDocument:
+        _switchDocument(1);
+      case PageStepOutcome.stayAtBoundary:
+        break;
     }
   }
 
   void _prev() {
     if (!_controller.isReady) return;
-    final prev = _spreadStart(_controller.pageNumber ?? 1) - _step;
-    if (prev < 1) {
-      _switchDocument(-1, gotoLast: true);
-    } else {
-      _controller.goToPage(pageNumber: prev, duration: Duration.zero);
+    final plan = planPageStep(
+      currentSpreadStart: _spreadStart(_controller.pageNumber ?? 1),
+      step: -_step,
+      pageCount: _controller.pageCount,
+      annotating: _controller.annotationModeListenable.value,
+    );
+    switch (plan.outcome) {
+      case PageStepOutcome.goToPage:
+        _controller.goToPage(pageNumber: plan.page, duration: Duration.zero);
+      case PageStepOutcome.switchDocument:
+        _switchDocument(-1, gotoLast: true);
+      case PageStepOutcome.stayAtBoundary:
+        break;
     }
   }
 
@@ -314,7 +379,14 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   customizeContextMenuItems: (params, items) {},
                   onGeneralTap: (context, controller, details) {
                     if (details.type != PdfViewerGeneralTapType.tap) return false;
-                    if (controller.annotationModeListenable.value) return false;
+                    // Route taps when navigation is available (mode off,
+                    // or hand tool). Drawing tools fall through (false).
+                    if (!annotationNavigationAvailable(
+                      controller.annotationModeListenable.value,
+                      controller.annotationToolListenable.value,
+                    )) {
+                      return false;
+                    }
                     final width = controller.viewSize.width;
                     if (details.localPosition.dx < width / 2) {
                       _prev();
@@ -326,14 +398,20 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   viewerOverlayBuilder: (context, size, handleLinkTap) => [
                     ValueListenableBuilder<bool>(
                       valueListenable: _controller.annotationModeListenable,
-                      builder: (context, annotating, _) {
-                        if (annotating) return const SizedBox.shrink();
-                        return PageIndicator(
-                          controller: _controller,
-                          twoPageMode: _twoPageMode,
-                          currentPage: _currentPage,
-                        );
-                      },
+                      builder: (context, annotating, _) => ValueListenableBuilder<PdfAnnotationTool>(
+                        valueListenable: _controller.annotationToolListenable,
+                        builder: (context, tool, _) {
+                          if (!annotationNavigationAvailable(annotating, tool)) {
+                            return const SizedBox.shrink();
+                          }
+                          return PageIndicator(
+                            key: const Key('pageIndicator'),
+                            controller: _controller,
+                            twoPageMode: _twoPageMode,
+                            currentPage: _currentPage,
+                          );
+                        },
+                      ),
                     ),
                   ],
                   onPageChanged: (pageNumber) {
