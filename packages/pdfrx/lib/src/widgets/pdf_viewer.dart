@@ -333,6 +333,8 @@ class _PdfViewerState extends State<PdfViewer>
     if (oldWidget?.documentRef.key == widget.documentRef.key) {
       if (widget.params.doChangesRequireReload(oldWidget?.params)) {
         if (widget.params.annotationRenderingMode != oldWidget?.params.annotationRenderingMode) {
+          _imageCache.cancelAllPendingRenderings();
+          _magnifierImageCache.cancelAllPendingRenderings();
           _imageCache.releaseAllImages();
           _magnifierImageCache.releaseAllImages();
         }
@@ -354,6 +356,12 @@ class _PdfViewerState extends State<PdfViewer>
     _documentSubscription = null;
     _textSelectionChangedDebounceTimer?.cancel();
     _stopInteraction();
+    // Cancel in-flight page renderings before releasing images. Otherwise a
+    // render started for the previous document can complete after the swap and
+    // store a stale texture under the same page number, which then gets drawn
+    // for the new document's page (see forceRepaintAllPageImages for the idiom).
+    _imageCache.cancelAllPendingRenderings();
+    _magnifierImageCache.cancelAllPendingRenderings();
     _imageCache.releaseAllImages();
     _magnifierImageCache.releaseAllImages();
     _canvasLinkPainter.resetAll();
