@@ -199,6 +199,28 @@ void main() {
       expect(controller.selectedStampIdListenable.value, isNull);
       expect(controller.pendingStampListenable.value, isNull);
     });
+
+    test('setTool(hand) clears both pending stamp and selection', () {
+      final controller = PdfAnnotationController();
+      addTearDown(controller.dispose);
+      controller.enterMode(creatorName: 'alice', tool: PdfAnnotationTool.stamp);
+      controller.placeStamp(
+        bytes: Uint8List.fromList([1]),
+        contentType: 'image/svg+xml',
+        pageIndex: 0,
+        pdfPoint: const Offset(50, 50),
+        intrinsicSize: const Size(24, 24),
+        pageSize: _pageSize,
+        idGenerator: () => 'sel',
+      );
+      controller.selectStamp('sel');
+      controller.setPendingStamp(_def());
+
+      controller.setTool(PdfAnnotationTool.hand);
+      expect(controller.currentToolListenable.value, PdfAnnotationTool.hand);
+      expect(controller.selectedStampIdListenable.value, isNull);
+      expect(controller.pendingStampListenable.value, isNull);
+    });
   });
 
   group('PdfAnnotationController.deleteStamp', () {

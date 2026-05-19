@@ -23,6 +23,17 @@ import 'internals/pdf_viewer_key_handler.dart';
 import 'internals/widget_size_sniffer.dart';
 import 'pdf_page_links_overlay.dart';
 
+/// `true` when annotation mode suppresses viewer navigation/pan/zoom —
+/// i.e. annotation mode is on AND the active tool captures input.
+///
+/// The [PdfAnnotationTool.hand] tool does not capture input, so it never
+/// suppresses navigation. A `null` [tool] (no annotation controller /
+/// tool unknown) is treated as a capturing tool when mode is on.
+///
+/// Pure function of `(modeOn, tool)` so navigation gating can be
+/// unit-tested without mounting a live viewer.
+bool navigationSuppressedByAnnotation(bool modeOn, PdfAnnotationTool? tool) => modeOn && tool != PdfAnnotationTool.hand;
+
 /// A widget to display PDF document.
 ///
 /// To create a [PdfViewer] widget, use one of the following constructors:
@@ -313,11 +324,21 @@ class _PdfViewerState extends State<PdfViewer>
     if (mounted) _invalidate();
   }
 
-  bool get _effectivePanEnabled =>
-      widget.params.panEnabled && !(_annotationController?.annotationModeListenable.value ?? false);
+  /// `true` when annotation mode is on AND the active tool captures
+  /// input (everything except [PdfAnnotationTool.hand]). The shared gate
+  /// for every navigation/pan/zoom suppression in this widget.
+  bool get _navigationSuppressedByAnnotation {
+    final controller = _annotationController;
+    if (controller == null) return false;
+    return navigationSuppressedByAnnotation(
+      controller.annotationModeListenable.value,
+      controller.currentToolListenable.value,
+    );
+  }
 
-  bool get _effectiveScaleEnabled =>
-      widget.params.scaleEnabled && !(_annotationController?.annotationModeListenable.value ?? false);
+  bool get _effectivePanEnabled => widget.params.panEnabled && !_navigationSuppressedByAnnotation;
+
+  bool get _effectiveScaleEnabled => widget.params.scaleEnabled && !_navigationSuppressedByAnnotation;
 
   @override
   void didUpdateWidget(covariant PdfViewer oldWidget) {
@@ -1221,7 +1242,7 @@ class _PdfViewerState extends State<PdfViewer>
   }
 
   void _goToManipulated(void Function(Matrix4 m) manipulate) {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return;
     }
     final m = _txController.value.clone();
@@ -2999,7 +3020,7 @@ class _PdfViewerState extends State<PdfViewer>
     Duration duration = const Duration(milliseconds: 200),
     Curve curve = Curves.easeInOut,
   }) async {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return;
     }
     void update() {
@@ -3060,7 +3081,7 @@ class _PdfViewerState extends State<PdfViewer>
     PdfPageAnchor? anchor,
     Duration duration = const Duration(milliseconds: 200),
   }) async {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return;
     }
     return _goTo(
@@ -3076,7 +3097,7 @@ class _PdfViewerState extends State<PdfViewer>
     bool maintainCurrentZoom = true,
     double? forceScale,
   }) async {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return;
     }
     final pageCount = _document!.pages.length;
@@ -3147,7 +3168,7 @@ class _PdfViewerState extends State<PdfViewer>
     PdfPageAnchor? anchor,
     Duration duration = const Duration(milliseconds: 200),
   }) async {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return;
     }
     _gotoTargetPageNumber = pageNumber;
@@ -3159,7 +3180,7 @@ class _PdfViewerState extends State<PdfViewer>
   }
 
   Future<bool> _goToDest(PdfDest? dest, {Duration duration = const Duration(milliseconds: 200)}) async {
-    if (_annotationController?.annotationModeListenable.value ?? false) {
+    if (_navigationSuppressedByAnnotation) {
       return false;
     }
     final m = _calcMatrixForDest(dest);
@@ -4946,6 +4967,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     if (__state != null) {
       __state!._txController.removeListener(_notifyListeners);
       _annotationController.annotationModeListenable.removeListener(__state!._onAnnotationModeChanged);
+      _annotationController.currentToolListenable.removeListener(__state!._onAnnotationModeChanged);
       _annotationController.removeListener(__state!._onAnnotationContentChanged);
       _annotationController.inFlightChangedListenable.removeListener(__state!._onAnnotationContentChanged);
     }
@@ -4953,6 +4975,11 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     if (__state != null) {
       __state!._txController.addListener(_notifyListeners);
       _annotationController.annotationModeListenable.addListener(__state!._onAnnotationModeChanged);
+      // The active tool feeds `_navigationSuppressedByAnnotation`, which
+      // drives `_effectivePanEnabled` / `_effectiveScaleEnabled` in
+      // build(). Rebuild on tool change so hand↔drawing-tool toggles
+      // flip pan/scale immediately.
+      _annotationController.currentToolListenable.addListener(__state!._onAnnotationModeChanged);
       // Committed-stroke changes (commit / erase / undo / redo / import
       // / clear) fire on the controller itself; per-point updates while
       // a stroke is being drawn fire on `inFlightChangedListenable`.

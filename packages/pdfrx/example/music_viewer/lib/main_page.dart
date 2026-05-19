@@ -206,6 +206,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                 onSelected: _controller.setAnnotationEraserRadius,
               ),
               PdfAnnotationTool.stamp => const SizedBox.shrink(),
+              PdfAnnotationTool.hand => const SizedBox.shrink(),
             },
             if (tool != PdfAnnotationTool.stamp)
               const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),

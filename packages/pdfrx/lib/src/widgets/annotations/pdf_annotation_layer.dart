@@ -204,6 +204,12 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       child: ValueListenableBuilder<PdfAnnotationTool>(
                         valueListenable: _controller.currentToolListenable,
                         builder: (context, tool, _) {
+                          if (tool == PdfAnnotationTool.hand) {
+                            // Navigation tool: capture nothing so pan,
+                            // tap, scroll, and pinch-zoom fall through
+                            // to the underlying PdfViewer.
+                            return const SizedBox.shrink();
+                          }
                           if (tool == PdfAnnotationTool.stamp) {
                             return Listener(
                               behavior: HitTestBehavior.opaque,
@@ -668,7 +674,10 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
-        // Handled by the Listener branch.
+      case PdfAnnotationTool.hand:
+        // stamp: handled by the Listener branch. hand: no gesture
+        // widget is mounted, so this is unreachable — covered for
+        // switch exhaustiveness only.
         return;
     }
   }
@@ -686,6 +695,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.hand:
         return;
     }
   }
@@ -698,6 +708,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.hand:
         return;
     }
   }
@@ -710,6 +721,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.hand:
         return;
     }
   }

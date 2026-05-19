@@ -173,6 +173,7 @@ class AnnotationStylePopups extends StatelessWidget {
           onSelected: controller.setAnnotationEraserRadius,
         );
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.hand:
         return const SizedBox.shrink();
     }
   }

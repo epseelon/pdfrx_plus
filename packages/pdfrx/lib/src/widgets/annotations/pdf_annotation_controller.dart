@@ -28,6 +28,11 @@ enum PdfAnnotationTool {
   /// [PdfStampDefinition] onto the page (or selects/manipulates an
   /// existing stamp owned by the current creator).
   stamp,
+
+  /// Navigation tool. Input is not captured by the annotation layer; the
+  /// underlying viewer handles pan, scroll, tap, and pinch-zoom. No
+  /// annotation is created.
+  hand,
 }
 
 /// Active drag affordance on the currently-selected stamp. The annotation
