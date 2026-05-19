@@ -37,6 +37,7 @@ class PdfAnnotationLayer extends StatefulWidget {
     required this.highlighterOpacity,
     this.stampImageBuilder,
     this.selectedStampInterfaceColor,
+    this.selectedStampPadding = 0.0,
     super.key,
   });
 
@@ -47,6 +48,13 @@ class PdfAnnotationLayer extends StatefulWidget {
   /// Color of the selection outline, handles, and buttons around the
   /// currently selected stamp. `null` falls back to the theme's primary.
   final Color? selectedStampInterfaceColor;
+
+  /// Uniform padding in screen pixels between a selected stamp's symbol
+  /// and its handle rectangle. Inflates the selection box, the
+  /// handle/delete-button positions, and the body hit-region; the
+  /// rendered symbol stays at its true bounds. Sourced by the
+  /// `PdfViewer` from `PdfViewerParams.selectedStampPadding`.
+  final double selectedStampPadding;
 
   /// Opacity stamped onto every newly-committed highlighter stroke. The
   /// caller (the `PdfViewer`) sources this from
@@ -245,7 +253,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       // the Listener below, which routes them based on
                       // our own hit-tests in page-local space (so handles
                       // floating outside the bbox still receive input).
-                      if (selectedStamp != null) _buildSelectionOverlay(selectedStamp, scaleX, scaleY),
+                      if (selectedStamp != null) _buildSelectionOverlay(selectedStamp),
                     ],
                   );
                 },
@@ -274,11 +282,12 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     return builder(context, attachment.bytes, stamp.contentType, displaySize);
   }
 
-  Widget _buildSelectionOverlay(PdfStampAnnotation stamp, double scaleX, double scaleY) {
-    final left = stamp.rectInPdfSpace.left * scaleX;
-    final top = stamp.rectInPdfSpace.top * scaleY;
-    final width = stamp.rectInPdfSpace.width * scaleX;
-    final height = stamp.rectInPdfSpace.height * scaleY;
+  Widget _buildSelectionOverlay(PdfStampAnnotation stamp) {
+    final selectionRect = _stampSelectionRect(stamp);
+    final left = selectionRect.left;
+    final top = selectionRect.top;
+    final width = selectionRect.width;
+    final height = selectionRect.height;
     final color = widget.selectedStampInterfaceColor ?? Theme.of(context).colorScheme.primary;
     final iconColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
 
@@ -415,7 +424,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   /// hit-testing only — the visual is rendered as a pointer-transparent
   /// affordance.
   Rect _stampDeleteButtonRect(PdfStampAnnotation stamp) {
-    final bbox = _stampLocalRect(stamp);
+    final bbox = _stampSelectionRect(stamp);
     return Rect.fromLTWH(
       bbox.right + _kRotateHandleGapPx,
       bbox.top - _kRotateHandleGapPx - _kDeleteButtonPx,
@@ -435,13 +444,21 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     );
   }
 
+  /// The handle rectangle for [stamp]: its symbol rect inflated on every
+  /// side by [PdfAnnotationLayer.selectedStampPadding] (screen pixels).
+  /// The selection outline, resize/rotation handles, delete button, and
+  /// every body/selection hit-test derive from this rect — the rendered
+  /// symbol itself stays at [_stampLocalRect]. With a `0.0` padding the
+  /// two rects are identical (exact-fit handle box).
+  Rect _stampSelectionRect(PdfStampAnnotation stamp) => _stampLocalRect(stamp).inflate(widget.selectedStampPadding);
+
   /// Returns the closest handle of [stamp] to [local], or `null` if no
   /// handle is within hit radius. When [local] falls inside the bbox
   /// without hitting any handle, returns [PdfStampHandle.body]. Closest
   /// wins over priority order so e.g. the top-edge midpoint beats the
   /// rotation handle when the user taps right at the edge.
   PdfStampHandle? _hitTestStampHandles(PdfStampAnnotation stamp, Offset local) {
-    final rect = _stampLocalRect(stamp);
+    final rect = _stampSelectionRect(stamp);
     PdfStampHandle? bestHandle;
     var bestDistSq = _kHandleHitRadiusPx * _kHandleHitRadiusPx;
 
@@ -472,7 +489,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     for (var i = pageStamps.length - 1; i >= 0; i--) {
       final s = pageStamps[i];
       if (s.creatorName != _controller.currentCreator) continue;
-      if (_stampLocalRect(s).contains(local)) return s;
+      if (_stampSelectionRect(s).contains(local)) return s;
     }
     return null;
   }
@@ -483,7 +500,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   PdfStampAnnotation? _hitTestAnyStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
     for (var i = pageStamps.length - 1; i >= 0; i--) {
       final s = pageStamps[i];
-      if (_stampLocalRect(s).contains(local)) return s;
+      if (_stampSelectionRect(s).contains(local)) return s;
     }
     return null;
   }

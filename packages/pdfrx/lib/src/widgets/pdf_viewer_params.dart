@@ -79,6 +79,7 @@ class PdfViewerParams {
     this.stampCategories,
     this.stampImageBuilder,
     this.selectedStampInterfaceColor,
+    this.selectedStampPadding = 0.0,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
   }) : scrollPhysics =
@@ -141,6 +142,24 @@ class PdfViewerParams {
   /// and delete button rendered around the currently selected stamp.
   /// When `null`, falls back to `Theme.of(context).colorScheme.primary`.
   final Color? selectedStampInterfaceColor;
+
+  /// Uniform padding, in screen pixels, inserted between a selected
+  /// stamp's symbol and its handle rectangle.
+  ///
+  /// Only affects a stamp while it is *selected*: the selection
+  /// outline, resize/rotation handles, delete button, and the body
+  /// ("move") hit-region are all inflated by this amount on every side,
+  /// while the rendered symbol stays at its true bounds. This spreads
+  /// the resize handles apart and enlarges the move target — important
+  /// for stamps whose aspect ratio is far from 1:1, where the short
+  /// axis would otherwise leave the handles too close together to grab
+  /// reliably on a touch screen.
+  ///
+  /// Measured in screen pixels (zoom-independent), matching the fixed
+  /// screen-pixel sizing of the handles themselves. The default `0.0`
+  /// reproduces the exact-fit selection box (handle rectangle equals
+  /// the symbol bounds).
+  final double selectedStampPadding;
 
   /// Function to customize the layout of the pages.
   ///
@@ -813,6 +832,7 @@ class PdfViewerParams {
         other.stampCategories == stampCategories &&
         other.stampImageBuilder == stampImageBuilder &&
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
+        other.selectedStampPadding == selectedStampPadding &&
         other.scrollPhysics == scrollPhysics;
   }
 
@@ -878,6 +898,7 @@ class PdfViewerParams {
         stampCategories.hashCode ^
         stampImageBuilder.hashCode ^
         selectedStampInterfaceColor.hashCode ^
+        selectedStampPadding.hashCode ^
         scrollPhysics.hashCode;
   }
 }
