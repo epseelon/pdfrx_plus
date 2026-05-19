@@ -136,111 +136,122 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     return ValueListenableBuilder<bool>(
       valueListenable: _controller.annotationModeListenable,
       builder: (context, modeOn, _) {
-        return IgnorePointer(
-          ignoring: !modeOn,
-          child: AnimatedBuilder(
-            // Selection-driven UI (the overlay + delete button) hangs
-            // off `selectedStampIdListenable`, so it must trigger a
-            // rebuild here. Without it, taps that select/deselect a
-            // stamp would update the controller silently and the user
-            // would only see handles appear after some other state
-            // change happened to bump the merged listenable.
-            animation: Listenable.merge([
-              _controller,
-              _controller.stampDragChangedListenable,
-              _controller.selectedStampIdListenable,
-            ]),
-            builder: (context, _) {
-              final pageStamps = _controller.stamps
-                  .where((s) => s.pageIndex == _page.pageNumber - 1)
-                  .toList(growable: false);
-              final scaleX = _pageRect.width / _page.width;
-              final scaleY = _pageRect.height / _page.height;
+        return ValueListenableBuilder<PdfAnnotationTool>(
+          valueListenable: _controller.currentToolListenable,
+          builder: (context, layerTool, _) {
+            return IgnorePointer(
+              // Ignore pointers entirely when annotation mode is off, or
+              // when the hand (navigation) tool is active — so pan, tap,
+              // scroll, and pinch-zoom fall straight through to the
+              // underlying PdfViewer instead of being absorbed here.
+              ignoring: !modeOn || layerTool == PdfAnnotationTool.hand,
+              child: AnimatedBuilder(
+                // Selection-driven UI (the overlay + delete button) hangs
+                // off `selectedStampIdListenable`, so it must trigger a
+                // rebuild here. Without it, taps that select/deselect a
+                // stamp would update the controller silently and the user
+                // would only see handles appear after some other state
+                // change happened to bump the merged listenable.
+                animation: Listenable.merge([
+                  _controller,
+                  _controller.stampDragChangedListenable,
+                  _controller.selectedStampIdListenable,
+                ]),
+                builder: (context, _) {
+                  final pageStamps = _controller.stamps
+                      .where((s) => s.pageIndex == _page.pageNumber - 1)
+                      .toList(growable: false);
+                  final scaleX = _pageRect.width / _page.width;
+                  final scaleY = _pageRect.height / _page.height;
 
-              final selectedId = _controller.selectedStampIdListenable.value;
-              final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
+                  final selectedId = _controller.selectedStampIdListenable.value;
+                  final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
 
-              return Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // Ink strokes (pen + highlighter) are painted on the
-                  // page canvas by the `PdfViewer` page painter so the
-                  // highlighter can multiply-blend with the page
-                  // content. This painter only renders the transient
-                  // eraser cursor preview.
-                  CustomPaint(
-                    painter: EraserCursorPainter(
-                      eraserCursorProvider: () => _controller.eraserCursorPageIndex == _page.pageNumber - 1
-                          ? _controller.eraserCursorPdfPoint
-                          : null,
-                      eraserRadiusProvider: () => _controller.eraserRadius,
-                      repaint: Listenable.merge([
-                        _controller.eraserCursorChangedListenable,
-                        _controller.eraserRadiusListenable,
-                      ]),
-                      pageWidth: _page.width,
-                      pageHeight: _page.height,
-                    ),
-                    size: _pageRect.size,
-                  ),
-                  for (final stamp in pageStamps)
-                    Positioned(
-                      key: Key('stamp:${stamp.id}'),
-                      left: stamp.rectInPdfSpace.left * scaleX,
-                      top: stamp.rectInPdfSpace.top * scaleY,
-                      width: stamp.rectInPdfSpace.width * scaleX,
-                      height: stamp.rectInPdfSpace.height * scaleY,
-                      child: Transform.rotate(
-                        angle: -stamp.rotationDeg * math.pi / 180.0,
-                        child: SizedBox(
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      // Ink strokes (pen + highlighter) are painted on the
+                      // page canvas by the `PdfViewer` page painter so the
+                      // highlighter can multiply-blend with the page
+                      // content. This painter only renders the transient
+                      // eraser cursor preview.
+                      CustomPaint(
+                        painter: EraserCursorPainter(
+                          eraserCursorProvider: () => _controller.eraserCursorPageIndex == _page.pageNumber - 1
+                              ? _controller.eraserCursorPdfPoint
+                              : null,
+                          eraserRadiusProvider: () => _controller.eraserRadius,
+                          repaint: Listenable.merge([
+                            _controller.eraserCursorChangedListenable,
+                            _controller.eraserRadiusListenable,
+                          ]),
+                          pageWidth: _page.width,
+                          pageHeight: _page.height,
+                        ),
+                        size: _pageRect.size,
+                      ),
+                      for (final stamp in pageStamps)
+                        Positioned(
+                          key: Key('stamp:${stamp.id}'),
+                          left: stamp.rectInPdfSpace.left * scaleX,
+                          top: stamp.rectInPdfSpace.top * scaleY,
                           width: stamp.rectInPdfSpace.width * scaleX,
                           height: stamp.rectInPdfSpace.height * scaleY,
-                          child: _buildStampChild(context, stamp, scaleX, scaleY),
+                          child: Transform.rotate(
+                            angle: -stamp.rotationDeg * math.pi / 180.0,
+                            child: SizedBox(
+                              width: stamp.rectInPdfSpace.width * scaleX,
+                              height: stamp.rectInPdfSpace.height * scaleY,
+                              child: _buildStampChild(context, stamp, scaleX, scaleY),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  if (modeOn)
-                    Positioned.fill(
-                      child: ValueListenableBuilder<PdfAnnotationTool>(
-                        valueListenable: _controller.currentToolListenable,
-                        builder: (context, tool, _) {
-                          if (tool == PdfAnnotationTool.hand) {
-                            // Navigation tool: capture nothing so pan,
-                            // tap, scroll, and pinch-zoom fall through
-                            // to the underlying PdfViewer.
-                            return const SizedBox.shrink();
-                          }
-                          if (tool == PdfAnnotationTool.stamp) {
-                            return Listener(
-                              behavior: HitTestBehavior.opaque,
-                              onPointerDown: (e) => _onStampPointerDown(e.localPosition),
-                              onPointerMove: (e) => _onStampPointerMove(e.localPosition),
-                              onPointerUp: (e) => _onStampPointerUp(e.localPosition),
-                              onPointerCancel: (_) => _onStampPointerCancel(),
-                            );
-                          }
-                          return GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onPanStart: (details) => _onPanStart(tool, details.localPosition),
-                            onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
-                            onPanEnd: (_) => _onPanEnd(tool),
-                            onPanCancel: () => _onPanCancel(tool),
-                          );
-                        },
-                      ),
-                    ),
-                  // Selection overlay is rendered above the input
-                  // handler but is fully pointer-transparent — every
-                  // affordance (resize/rotate handles, delete button)
-                  // is purely visual. Taps and drags fall through to
-                  // the Listener below, which routes them based on
-                  // our own hit-tests in page-local space (so handles
-                  // floating outside the bbox still receive input).
-                  if (selectedStamp != null) _buildSelectionOverlay(selectedStamp, scaleX, scaleY),
-                ],
-              );
-            },
-          ),
+                      if (modeOn)
+                        Positioned.fill(
+                          child: ValueListenableBuilder<PdfAnnotationTool>(
+                            valueListenable: _controller.currentToolListenable,
+                            builder: (context, tool, _) {
+                              if (tool == PdfAnnotationTool.hand) {
+                                // Navigation tool: capture nothing. The
+                                // whole layer is also wrapped in an
+                                // IgnorePointer for `hand` so pan, tap,
+                                // scroll, and pinch-zoom fall straight
+                                // through to the underlying PdfViewer.
+                                return const SizedBox.shrink();
+                              }
+                              if (tool == PdfAnnotationTool.stamp) {
+                                return Listener(
+                                  behavior: HitTestBehavior.opaque,
+                                  onPointerDown: (e) => _onStampPointerDown(e.localPosition),
+                                  onPointerMove: (e) => _onStampPointerMove(e.localPosition),
+                                  onPointerUp: (e) => _onStampPointerUp(e.localPosition),
+                                  onPointerCancel: (_) => _onStampPointerCancel(),
+                                );
+                              }
+                              return GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onPanStart: (details) => _onPanStart(tool, details.localPosition),
+                                onPanUpdate: (details) => _onPanUpdate(tool, details.localPosition),
+                                onPanEnd: (_) => _onPanEnd(tool),
+                                onPanCancel: () => _onPanCancel(tool),
+                              );
+                            },
+                          ),
+                        ),
+                      // Selection overlay is rendered above the input
+                      // handler but is fully pointer-transparent — every
+                      // affordance (resize/rotate handles, delete button)
+                      // is purely visual. Taps and drags fall through to
+                      // the Listener below, which routes them based on
+                      // our own hit-tests in page-local space (so handles
+                      // floating outside the bbox still receive input).
+                      if (selectedStamp != null) _buildSelectionOverlay(selectedStamp, scaleX, scaleY),
+                    ],
+                  );
+                },
+              ),
+            );
+          },
         );
       },
     );
