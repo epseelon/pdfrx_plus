@@ -618,6 +618,12 @@ const emEnv = {
     tm[7] = 0; // dst
     tm[8] = 0; // gmtoff
   },
+  _mmap_js: function (len, prot, flags, fd, offset_low, offset_high, allocated, addr) {
+    _notImplemented('_mmap_js');
+  },
+  _munmap_js: function (addr, len, prot, flags, fd, offset_low, offset_high) {
+    _notImplemented('_munmap_js');
+  },
   _localtime_js: function (time, tmPtr) {
     time = Number(time);
     const date = new Date(time * 1000);
@@ -734,6 +740,19 @@ async function loadDocumentFromUrl(params) {
   const headers = params.headers || {};
   const withCredentials = params.withCredentials || false;
   const progressCallbackId = params.progressCallbackId;
+  const preferRangeAccess = params.preferRangeAccess || false;
+
+  if (preferRangeAccess) {
+    const result = await loadDocumentFromUrlWithRangeAccess({
+      url,
+      password,
+      useProgressiveLoading,
+      headers,
+      withCredentials,
+      progressCallbackId,
+    });
+    if (result) return result;
+  }
 
   const response = await fetch(url, {
     headers: headers,
@@ -780,6 +799,502 @@ async function loadDocumentFromUrl(params) {
       useProgressiveLoading,
     });
   }
+}
+
+/**
+ * @typedef {{offset: number, end: number}} ByteRange
+ */
+
+const PDF_RANGE_DOWNLOAD_BLOCK_SIZE = 64 * 1024;
+
+class PdfRangeCache {
+  /**
+   * @param {string} url
+   * @param {Object.<string, string>} headers
+   * @param {boolean} withCredentials
+   * @param {number|undefined} progressCallbackId
+   */
+  constructor(url, headers, withCredentials, progressCallbackId) {
+    this.url = url;
+    this.headers = headers;
+    this.withCredentials = withCredentials;
+    this.progressCallbackId = progressCallbackId;
+    this.fileSize = 0;
+    /** @type {ByteRange[]} */
+    this.ranges = [];
+    /** @type {{offset: number, data: Uint8Array}[]} */
+    this.chunks = [];
+    this.bytesCached = 0;
+    this.nextUnhintedBlockOffset = 0;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} size
+   * @returns {ByteRange|null}
+   */
+  blockAlignedRange(offset, size) {
+    if (offset < 0 || size <= 0) return null;
+    if (this.fileSize > 0 && offset >= this.fileSize) return null;
+
+    const end = offset + size;
+    const alignedOffset = Math.floor(offset / PDF_RANGE_DOWNLOAD_BLOCK_SIZE) * PDF_RANGE_DOWNLOAD_BLOCK_SIZE;
+    let alignedEnd = Math.ceil(end / PDF_RANGE_DOWNLOAD_BLOCK_SIZE) * PDF_RANGE_DOWNLOAD_BLOCK_SIZE;
+    if (this.fileSize > 0) {
+      alignedEnd = Math.min(alignedEnd, this.fileSize);
+    }
+    if (alignedEnd <= alignedOffset) return null;
+
+    return { offset: alignedOffset, end: alignedEnd };
+  }
+
+  get fetchCredentials() {
+    return this.withCredentials ? 'include' : 'same-origin';
+  }
+
+  async ensureFileSize() {
+    if (this.fileSize > 0) return this.fileSize;
+    const response = await fetch(this.url, {
+      method: 'HEAD',
+      headers: this.headers,
+      mode: 'cors',
+      credentials: this.fetchCredentials,
+      redirect: 'follow',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to get PDF file size: ${response.status} ${response.statusText}`);
+    }
+    const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+    if (!contentLength) {
+      throw new Error('Failed to get PDF file size from Content-Length');
+    }
+    this.fileSize = contentLength;
+    return this.fileSize;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} size
+   * @returns {boolean}
+   */
+  isDataAvailable(offset, size) {
+    if (size <= 0) return true;
+    const end = offset + size;
+    for (const range of this.ranges) {
+      if (offset >= range.offset && end <= range.end) return true;
+      if (range.offset > offset) return false;
+    }
+    return false;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} size
+   * @returns {ByteRange[]}
+   */
+  missingRanges(offset, size) {
+    if (size <= 0) return [];
+    const end = offset + size;
+    let position = offset;
+    /** @type {ByteRange[]} */
+    const missing = [];
+
+    for (const range of this.ranges) {
+      if (range.end <= position) continue;
+      if (range.offset >= end) break;
+      if (position < range.offset) {
+        missing.push({ offset: position, end: Math.min(range.offset, end) });
+      }
+      position = Math.max(position, range.end);
+      if (position >= end) break;
+    }
+
+    if (position < end) {
+      missing.push({ offset: position, end });
+    }
+    return missing;
+  }
+
+  /**
+   * @returns {Promise<ByteRange|null>}
+   */
+  async nextUnhintedBlock() {
+    await this.ensureFileSize();
+
+    const tailOffset = Math.floor((this.fileSize - 1) / PDF_RANGE_DOWNLOAD_BLOCK_SIZE) * PDF_RANGE_DOWNLOAD_BLOCK_SIZE;
+    if (!this.isDataAvailable(tailOffset, this.fileSize - tailOffset)) {
+      return { offset: tailOffset, end: this.fileSize };
+    }
+
+    for (let offset = this.nextUnhintedBlockOffset; offset < this.fileSize; offset += PDF_RANGE_DOWNLOAD_BLOCK_SIZE) {
+      const end = Math.min(offset + PDF_RANGE_DOWNLOAD_BLOCK_SIZE, this.fileSize);
+      this.nextUnhintedBlockOffset = end;
+      if (!this.isDataAvailable(offset, end - offset)) {
+        return { offset, end };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {Uint8Array} data
+   */
+  addData(offset, data) {
+    if (data.length === 0) return;
+    this.chunks.push({ offset, data });
+    this._addRange(offset, offset + data.length);
+    this.bytesCached = this.ranges.reduce((sum, range) => sum + range.end - range.offset, 0);
+    invokeCallback(this.progressCallbackId, this.bytesCached, this.fileSize || undefined);
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} end
+   */
+  _addRange(offset, end) {
+    const ranges = [...this.ranges, { offset, end }].sort((a, b) => a.offset - b.offset);
+    /** @type {ByteRange[]} */
+    const merged = [];
+    for (const range of ranges) {
+      const last = merged[merged.length - 1];
+      if (!last || range.offset > last.end) {
+        merged.push({ offset: range.offset, end: range.end });
+      } else {
+        last.end = Math.max(last.end, range.end);
+      }
+    }
+    this.ranges = merged;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} pBuf
+   * @param {number} size
+   * @returns {number}
+   */
+  read(offset, pBuf, size) {
+    if (!this.isDataAvailable(offset, size)) return 0;
+
+    const dst = new Uint8Array(Pdfium.memory.buffer, pBuf, size);
+    let copied = 0;
+    let position = offset;
+    while (copied < size) {
+      const chunk = this.chunks.find((candidate) => {
+        const end = candidate.offset + candidate.data.length;
+        return position >= candidate.offset && position < end;
+      });
+      if (!chunk) return 0;
+
+      const chunkOffset = position - chunk.offset;
+      const bytesToCopy = Math.min(size - copied, chunk.data.length - chunkOffset);
+      dst.set(chunk.data.subarray(chunkOffset, chunkOffset + bytesToCopy), copied);
+      copied += bytesToCopy;
+      position += bytesToCopy;
+    }
+    return 1;
+  }
+
+  /**
+   * @param {number} offset
+   * @param {number} size
+   * @returns {Promise<boolean>} true if range access is usable; false if the caller should use full download.
+   */
+  async download(offset, size) {
+    const range = this.blockAlignedRange(offset, size);
+    if (!range || this.isDataAvailable(range.offset, range.end - range.offset)) return true;
+
+    const response = await fetch(this.url, {
+      headers: {
+        ...this.headers,
+        Range: `bytes=${range.offset}-${range.end - 1}`,
+      },
+      mode: 'cors',
+      credentials: this.fetchCredentials,
+      redirect: 'follow',
+    });
+    if (response.status === 200) {
+      const data = new Uint8Array(await response.arrayBuffer());
+      this.fileSize = data.length;
+      this.addData(0, data);
+      return false;
+    }
+
+    if (response.status !== 206) {
+      throw new Error(`Failed to download PDF range: ${response.status} ${response.statusText}`);
+    }
+
+    const contentRange = response.headers.get('content-range');
+    let start = range.offset;
+    let total = this.fileSize;
+    const match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(contentRange);
+    if (match && match[3] !== '*') {
+      start = parseInt(match[1], 10);
+      total = parseInt(match[3], 10);
+    } else {
+      total = await this.ensureFileSize();
+    }
+
+    const data = new Uint8Array(await response.arrayBuffer());
+    this.fileSize = total;
+    this.addData(start, data);
+    return true;
+  }
+}
+
+const PDF_DATA_ERROR = -1;
+const PDF_DATA_NOTAVAIL = 0;
+const PDF_DATA_AVAIL = 1;
+const PDF_FORM_ERROR = -1;
+const PDF_FORM_NOTAVAIL = 0;
+const PDF_FORM_AVAIL = 1;
+const PDF_FORM_NOTEXIST = 2;
+
+/** @type {Object<number, {avail: number, cache: PdfRangeCache, downloadHintsPtr: number, takeSegments: function():ByteRange[]}>} */
+const rangeDocumentAvailabilities = {};
+
+/**
+ * @param {{url: string, password: string, useProgressiveLoading: boolean, headers: Object.<string, string>, withCredentials: boolean, progressCallbackId: number|undefined}} params
+ * @returns {Promise<PdfDocument|PdfError|null>} null means range access was not usable and the caller should fall back.
+ */
+async function loadDocumentFromUrlWithRangeAccess(params) {
+  const requiredExports = [
+    'FPDFAvail_Create',
+    'FPDFAvail_Destroy',
+    'FPDFAvail_IsDocAvail',
+    'FPDFAvail_GetDocument',
+    'FPDFAvail_IsPageAvail',
+    'FPDFAvail_IsFormAvail',
+  ];
+  if (!requiredExports.every((name) => typeof Pdfium.wasmExports[name] === 'function')) {
+    return null;
+  }
+
+  const cache = new PdfRangeCache(params.url, params.headers, params.withCredentials, params.progressCallbackId);
+  const initialRangeSize = 64 * 1024;
+  const rangeUsable = await cache.download(0, initialRangeSize);
+  if (!rangeUsable || cache.fileSize <= 0) return null;
+
+  const fileAvailSize = 8; // FX_FILEAVAIL: int version + function pointer
+  const downloadHintsSize = 8; // FX_DOWNLOADHINTS: int version + function pointer
+  const fileAccessSize = 12; // FPDF_FILEACCESS: length + getBlock + param
+  let fileAvailPtr = 0;
+  let downloadHintsPtr = 0;
+  let fileAccessPtr = 0;
+  let isDataAvailCallback = 0;
+  let addSegmentCallback = 0;
+  let getBlockCallback = 0;
+  let avail = 0;
+  let docHandle = 0;
+  let disposed = false;
+  /** @type {ByteRange[]} */
+  let pendingSegments = [];
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    if (docHandle) delete rangeDocumentAvailabilities[docHandle];
+    if (avail) Pdfium.wasmExports.FPDFAvail_Destroy(avail);
+    if (isDataAvailCallback) Pdfium.removeFunction(isDataAvailCallback);
+    if (addSegmentCallback) Pdfium.removeFunction(addSegmentCallback);
+    if (getBlockCallback) Pdfium.removeFunction(getBlockCallback);
+    if (fileAvailPtr) Pdfium.wasmExports.free(fileAvailPtr);
+    if (downloadHintsPtr) Pdfium.wasmExports.free(downloadHintsPtr);
+    if (fileAccessPtr) Pdfium.wasmExports.free(fileAccessPtr);
+  };
+
+  try {
+    fileAvailPtr = Pdfium.wasmExports.malloc(fileAvailSize);
+    downloadHintsPtr = Pdfium.wasmExports.malloc(downloadHintsSize);
+    fileAccessPtr = Pdfium.wasmExports.malloc(fileAccessSize);
+    if (!fileAvailPtr || !downloadHintsPtr || !fileAccessPtr) {
+      throw new Error('Failed to allocate PDF range access structures');
+    }
+
+    isDataAvailCallback = Pdfium.addFunction((_pThis, offset, size) => {
+      return cache.isDataAvailable(offset, size) ? 1 : 0;
+    }, 'iiii');
+    addSegmentCallback = Pdfium.addFunction((_pThis, offset, size) => {
+      pendingSegments.push({ offset, end: offset + size });
+    }, 'viii');
+    getBlockCallback = Pdfium.addFunction((_param, position, pBuf, size) => {
+      return cache.read(position, pBuf, size);
+    }, 'iiiii');
+
+    const fileAvail = new Uint32Array(Pdfium.memory.buffer, fileAvailPtr, fileAvailSize >> 2);
+    fileAvail[0] = 1;
+    fileAvail[1] = isDataAvailCallback;
+
+    const downloadHints = new Uint32Array(Pdfium.memory.buffer, downloadHintsPtr, downloadHintsSize >> 2);
+    downloadHints[0] = 1;
+    downloadHints[1] = addSegmentCallback;
+
+    const fileAccess = new Uint32Array(Pdfium.memory.buffer, fileAccessPtr, fileAccessSize >> 2);
+    fileAccess[0] = cache.fileSize;
+    fileAccess[1] = getBlockCallback;
+    fileAccess[2] = 0;
+
+    avail = Pdfium.wasmExports.FPDFAvail_Create(fileAvailPtr, fileAccessPtr);
+    if (!avail) {
+      dispose();
+      return null;
+    }
+
+    const docResult = await _waitForPdfAvailability(cache, () => Pdfium.wasmExports.FPDFAvail_IsDocAvail(avail, downloadHintsPtr), () => {
+      const segments = pendingSegments;
+      pendingSegments = [];
+      return segments;
+    });
+    if (docResult === PDF_DATA_ERROR) {
+      throw new Error('Failed to make PDF document data available');
+    }
+
+    const passwordPtr = StringUtils.allocateUTF8(params.password);
+    try {
+      docHandle = Pdfium.wasmExports.FPDFAvail_GetDocument(avail, passwordPtr);
+    } finally {
+      StringUtils.freeUTF8(passwordPtr);
+    }
+    if (!docHandle) {
+      dispose();
+      return _loadDocument(docHandle, params.useProgressiveLoading, () => {});
+    }
+
+    const formResult = await _waitForPdfAvailability(
+      cache,
+      () => Pdfium.wasmExports.FPDFAvail_IsFormAvail(avail, downloadHintsPtr),
+      () => {
+        const segments = pendingSegments;
+        pendingSegments = [];
+        return segments;
+      },
+      [PDF_FORM_AVAIL, PDF_FORM_NOTEXIST],
+      PDF_FORM_ERROR
+    );
+    if (formResult === PDF_FORM_ERROR) {
+      throw new Error('Failed to make PDF form data available');
+    }
+
+    rangeDocumentAvailabilities[docHandle] = {
+      avail,
+      cache,
+      downloadHintsPtr,
+      takeSegments: () => {
+        const segments = pendingSegments;
+        pendingSegments = [];
+        return segments;
+      },
+    };
+
+    const pageCount = Pdfium.wasmExports.FPDF_GetPageCount(docHandle);
+    if (params.useProgressiveLoading) {
+      await _ensurePageAvailable(docHandle, 0);
+    } else {
+      for (let i = 0; i < pageCount; i++) {
+        await _ensurePageAvailable(docHandle, i);
+      }
+    }
+
+    return _loadDocument(docHandle, params.useProgressiveLoading, dispose);
+  } catch (e) {
+    if (docHandle) {
+      try {
+        Pdfium.wasmExports.FPDF_CloseDocument(docHandle);
+      } catch (_) {}
+    }
+    dispose();
+    throw e;
+  }
+}
+
+/**
+ * @param {number} docHandle
+ * @param {number} pageIndex
+ */
+async function _ensurePageAvailable(docHandle, pageIndex) {
+  const availability = rangeDocumentAvailabilities[docHandle];
+  if (!availability) return;
+
+  const result = await _waitForPdfAvailability(
+    availability.cache,
+    () => Pdfium.wasmExports.FPDFAvail_IsPageAvail(availability.avail, pageIndex, availability.downloadHintsPtr),
+    availability.takeSegments
+  );
+  if (result === PDF_DATA_ERROR) {
+    throw new Error(`Failed to make PDF page ${pageIndex} data available`);
+  }
+}
+
+/**
+ * @param {PdfRangeCache} cache
+ * @param {function():number} check
+ * @param {function():ByteRange[]} takeSegments
+ * @param {number[]} availableResults
+ * @param {number} errorResult
+ * @returns {Promise<number>}
+ */
+async function _waitForPdfAvailability(
+  cache,
+  check,
+  takeSegments,
+  availableResults = [PDF_DATA_AVAIL],
+  errorResult = PDF_DATA_ERROR
+) {
+  for (let i = 0; i < 1000; i++) {
+    const result = check();
+    const segments = takeSegments();
+    if (availableResults.includes(result)) return result;
+    if (result === errorResult) return result;
+    if (result !== PDF_DATA_NOTAVAIL && result !== PDF_FORM_NOTAVAIL) return result;
+    if (segments.length === 0) {
+      const segment = await cache.nextUnhintedBlock();
+      if (!segment) {
+        return availableResults[0];
+      }
+      const size = segment.end - segment.offset;
+      const rangeUsable = await cache.download(segment.offset, size);
+      if (!rangeUsable && !cache.isDataAvailable(segment.offset, size)) {
+        throw new Error('PDF range response did not expose usable Content-Range metadata');
+      }
+      continue;
+    }
+    for (const segment of _mergeDownloadSegments(segments)) {
+      for (const missing of cache.missingRanges(segment.offset, segment.end - segment.offset)) {
+        const size = missing.end - missing.offset;
+        const rangeUsable = await cache.download(missing.offset, size);
+        if (!rangeUsable && !cache.isDataAvailable(missing.offset, size)) {
+          throw new Error('PDF range response did not expose usable Content-Range metadata');
+        }
+      }
+    }
+  }
+  throw new Error('Timed out while waiting for PDF range data availability');
+}
+
+/**
+ * @param {ByteRange[]} segments
+ * @returns {ByteRange[]}
+ */
+function _mergeDownloadSegments(segments) {
+  const sorted = segments
+    .filter((segment) => segment.end > segment.offset)
+    .map((segment) => ({
+      offset: Math.floor(segment.offset / PDF_RANGE_DOWNLOAD_BLOCK_SIZE) * PDF_RANGE_DOWNLOAD_BLOCK_SIZE,
+      end: Math.ceil(segment.end / PDF_RANGE_DOWNLOAD_BLOCK_SIZE) * PDF_RANGE_DOWNLOAD_BLOCK_SIZE,
+    }))
+    .sort((a, b) => a.offset - b.offset);
+  /** @type {ByteRange[]} */
+  const merged = [];
+  for (const segment of sorted) {
+    const last = merged[merged.length - 1];
+    if (!last || segment.offset > last.end) {
+      merged.push({ offset: segment.offset, end: segment.end });
+    } else {
+      last.end = Math.max(last.end, segment.end);
+    }
+  }
+  return merged;
 }
 
 /**
@@ -972,12 +1487,62 @@ function _loadPagesInLimitedTime(docHandle, pagesLoadedCountSoFar, maxPageCountT
 }
 
 /**
+ * @param {number} docHandle
+ * @param {number} pagesLoadedCountSoFar
+ * @param {number|null} maxPageCountToLoadAdditionally
+ * @param {number} timeoutMs
+ * @returns {Promise<PdfPage[]>}
+ */
+async function _loadPagesInLimitedTimeAsync(docHandle, pagesLoadedCountSoFar, maxPageCountToLoadAdditionally, timeoutMs) {
+  const pageCount = Pdfium.wasmExports.FPDF_GetPageCount(docHandle);
+  const end =
+    maxPageCountToLoadAdditionally == null
+      ? pageCount
+      : Math.min(pageCount, pagesLoadedCountSoFar + maxPageCountToLoadAdditionally);
+  const t = timeoutMs != null ? Date.now() + timeoutMs : null;
+  /** @type {PdfPage[]} */
+  const pages = [];
+  _resetMissingFonts();
+  for (let i = pagesLoadedCountSoFar; i < end; i++) {
+    await _ensurePageAvailable(docHandle, i);
+    const pageHandle = Pdfium.wasmExports.FPDF_LoadPage(docHandle, i);
+    if (!pageHandle) {
+      const error = Pdfium.wasmExports.FPDF_GetLastError();
+      throw new Error(`FPDF_LoadPage failed (${_getErrorMessage(error)})`);
+    }
+
+    const rectBuffer = Pdfium.wasmExports.malloc(4 * 4); // FS_RECTF: float[4]
+    Pdfium.wasmExports.FPDF_GetPageBoundingBox(pageHandle, rectBuffer);
+    const rect = new Float32Array(Pdfium.memory.buffer, rectBuffer, 4);
+    const bbLeft = rect[0];
+    const bbBottom = rect[3];
+    Pdfium.wasmExports.free(rectBuffer);
+
+    pages.push({
+      pageIndex: i,
+      width: Pdfium.wasmExports.FPDF_GetPageWidthF(pageHandle),
+      height: Pdfium.wasmExports.FPDF_GetPageHeightF(pageHandle),
+      rotation: Pdfium.wasmExports.FPDFPage_GetRotation(pageHandle),
+      isLoaded: true,
+      bbLeft: bbLeft,
+      bbBottom: bbBottom,
+    });
+    Pdfium.wasmExports.FPDF_ClosePage(pageHandle);
+    if (t != null && Date.now() > t) {
+      break;
+    }
+  }
+  _updateMissingFonts(docHandle);
+  return pages;
+}
+
+/**
  * @param {{docHandle: number, loadUnitDuration: number}} params
  * @returns {{pages: PdfPage[], missingFonts: FontQueries}}
  */
-function loadPagesProgressively(params) {
+async function loadPagesProgressively(params) {
   const { docHandle, firstPageIndex, loadUnitDuration } = params;
-  const pages = _loadPagesInLimitedTime(docHandle, firstPageIndex, null, loadUnitDuration);
+  const pages = await _loadPagesInLimitedTimeAsync(docHandle, firstPageIndex, null, loadUnitDuration);
   return { pages, missingFonts: missingFonts[docHandle] };
 }
 
@@ -986,8 +1551,8 @@ function loadPagesProgressively(params) {
  * @param {{docHandle: number, pageIndices: number[]|undefined, currentPagesCount: number}} params
  * @returns {{pages: PdfPage[], missingFonts: FontQueries}}
  */
-function reloadPages(params) {
-  const { docHandle, pageIndices } = params;
+async function reloadPages(params) {
+  const { docHandle, pageIndices, currentPagesCount } = params;
   /** @type {PdfPage[]} */
   const pages = [];
   const pageCount = Pdfium.wasmExports.FPDF_GetPageCount(docHandle);
@@ -1013,6 +1578,7 @@ function reloadPages(params) {
 
   _resetMissingFonts();
   for (const pageIndex of indicesToLoad) {
+    await _ensurePageAvailable(docHandle, pageIndex);
     const pageHandle = Pdfium.wasmExports.FPDF_LoadPage(docHandle, pageIndex);
     if (!pageHandle) {
       const error = Pdfium.wasmExports.FPDF_GetLastError();
@@ -1101,7 +1667,8 @@ function _getOutlineNodeSiblings(bookmark, docHandle) {
  * @param {{docHandle: number, pageIndex: number}} params
  * @return {number} Page handle
  */
-function loadPage(params) {
+async function loadPage(params) {
+  await _ensurePageAvailable(params.docHandle, params.pageIndex);
   const pageHandle = Pdfium.wasmExports.FPDF_LoadPage(params.docHandle, params.pageIndex);
   if (!pageHandle) {
     throw new Error(`Failed to load page ${params.pageIndex} from document ${params.docHandle}`);
@@ -1141,7 +1708,7 @@ function closePage(params) {
  * missingFonts: FontQueries
  * }}
  */
-function renderPage(params) {
+async function renderPage(params) {
   const {
     docHandle,
     pageIndex,
@@ -1164,6 +1731,7 @@ function renderPage(params) {
 
   try {
     _resetMissingFonts();
+    await _ensurePageAvailable(docHandle, pageIndex);
     pageHandle = Pdfium.wasmExports.FPDF_LoadPage(docHandle, pageIndex);
     if (!pageHandle) {
       throw new Error(`Failed to load page ${pageIndex} from document ${docHandle}`);
@@ -1239,9 +1807,10 @@ function _memset(ptr, value, num) {
  * @param {{pageIndex: number, docHandle: number}} params
  * @returns {{fullText: string, charRects: number[][], missingFonts: FontQueries}}
  */
-function loadText(params) {
+async function loadText(params) {
   _resetMissingFonts();
   const { pageIndex, docHandle } = params;
+  await _ensurePageAvailable(docHandle, pageIndex);
   const pageHandle = Pdfium.wasmExports.FPDF_LoadPage(docHandle, pageIndex);
   const textPage = Pdfium.wasmExports.FPDFText_LoadPage(pageHandle);
   if (textPage == null) return { fullText: '' };
@@ -1282,7 +1851,8 @@ function loadText(params) {
  * @param {{docHandle: number, pageIndex: number, enableAutoLinkDetection: boolean}} params
  * @returns {{links: Array<PdfUrlLink|PdfDestLink>}}
  */
-function loadLinks(params) {
+async function loadLinks(params) {
+  await _ensurePageAvailable(params.docHandle, params.pageIndex);
   const links = [..._loadAnnotLinks(params), ...(params.enableAutoLinkDetection ? _loadWebLinks(params) : [])];
   return {
     links: links,
@@ -1505,102 +2075,295 @@ function _pdfDestFromDest(dest, docHandle) {
 }
 
 /**
- * Setup the system font info in PDFium.
+ * Install the system font info in PDFium.
  */
-function _initializeFontEnvironment() {
-  // kBase14FontNames
-  const fontNamesToIgnore = {
-    Courier: true,
-    'Courier-Bold': true,
-    'Courier-BoldOblique': true,
-    'Courier-Oblique': true,
-    Helvetica: true,
-    'Helvetica-Bold': true,
-    'Helvetica-BoldOblique': true,
-    'Helvetica-Oblique': true,
-    'Times-Roman': true,
-    'Times-Bold': true,
-    'Times-BoldItalic': true,
-    'Times-Italic': true,
-    Symbol: true,
-    ZapfDingbats: true,
-  };
+async function _installFontMapper() {
+  if (pdfFontMapper) return;
+  const fontMapper = new PdfFontMapper();
+  fontMapper.install();
+  pdfFontMapper = fontMapper;
+  Pdfium.wasmExports.FPDF_SetSystemFontInfo(fontMapper.sysFontInfo);
+  await _reloadFontCache();
+}
 
-  // load the default system font info and modify only MapFont (index=3) entry with our one, which
-  // wraps the original function and adds our custom logic
-  const sysFontInfoBuffer = Pdfium.wasmExports.FPDF_GetDefaultSystemFontInfo();
-  const sysFontInfo = new Int32Array(Pdfium.memory.buffer, sysFontInfoBuffer, 9); // struct _FPDF_SYSFONTINFO
+async function _reloadFontCache() {
+  for (const font of await PdfFontPersistentCache.instance.loadAll()) {
+    pdfFontMapper?.addFontData(font);
+  }
+}
 
-  // void* MapFont(
-  //   struct _FPDF_SYSFONTINFO* pThis,
-  //   int weight,
-  //   FPDF_BOOL bItalic,
-  //   int charset,
-  //   int pitch_family,
-  //   const char* face,
-  //   FPDF_BOOL* bExact);
-  const mapFont = sysFontInfo[3];
-  sysFontInfo[3] = Pdfium.addFunction((pThis, weight, bItalic, charset, pitchFamily, face, bExact) => {
-    const result = Pdfium.invokeFunc(mapFont, (func) =>
-      func(sysFontInfoBuffer, weight, bItalic, charset, pitchFamily, face, bExact)
+/**
+ * Reload fonts into the current mapper.
+ */
+async function reloadFonts() {
+  console.log('Reloading fonts in PDFium font mapper...');
+  await _reloadFontCache();
+  return { message: 'Fonts reloaded' };
+}
+let pdfFontMapper = null;
+
+const fontNamesToIgnore = {
+  Symbol: true,
+  ZapfDingbats: true,
+};
+
+class PdfFontPersistentCache {
+  static instance = new PdfFontPersistentCache();
+
+  constructor() {
+    this.dbName = 'pdfrx.fonts';
+    this.storeName = 'fonts';
+    this.dbPromise = null;
+  }
+
+  async open() {
+    if (this.dbPromise) return this.dbPromise;
+    if (!self.indexedDB) {
+      this.dbPromise = Promise.resolve(null);
+      return this.dbPromise;
+    }
+    this.dbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(this.storeName)) {
+          db.createObjectStore(this.storeName, { keyPath: 'face' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error(`Opening IndexedDB ${this.dbName} was blocked.`));
+    }).catch((error) => {
+      console.warn('Failed to open font cache database:', error);
+      return null;
+    });
+    return this.dbPromise;
+  }
+
+  async loadAll() {
+    const db = await this.open();
+    if (!db) return [];
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readonly');
+      const request = transaction.objectStore(this.storeName).getAll();
+      request.onsuccess = () => resolve(request.result ?? []);
+      request.onerror = () => reject(request.error);
+      transaction.onerror = () => reject(transaction.error);
+    }).catch((error) => {
+      console.warn('Failed to load cached fonts:', error);
+      return [];
+    });
+  }
+
+  async put({ face, data, resolvedFace }) {
+    const db = await this.open();
+    if (!db) return;
+    const storedData = data instanceof ArrayBuffer ? data.slice(0) : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readwrite');
+      transaction.objectStore(this.storeName).put({ face, resolvedFace, data: storedData });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    }).catch((error) => {
+      console.warn(`Failed to store cached font "${face}":`, error);
+    });
+  }
+
+  async clear() {
+    const db = await this.open();
+    if (!db) return;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readwrite');
+      transaction.objectStore(this.storeName).clear();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    }).catch((error) => {
+      console.warn('Failed to clear cached fonts:', error);
+    });
+  }
+}
+
+class PdfFontMapper {
+  constructor() {
+    this.sysFontInfo = Pdfium.wasmExports.malloc(9 * 4);
+    new Int32Array(Pdfium.memory.buffer, this.sysFontInfo, 9).fill(0);
+    new Int32Array(Pdfium.memory.buffer, this.sysFontInfo, 1)[0] = 2;
+    this.missingFonts = {};
+    this.cachedFontsByFace = {};
+    this.mappedFonts = {};
+    this.aliases = {};
+    this.functionPointers = [];
+    this.nextMappedFontHandle = 1;
+  }
+
+  install() {
+    const sysFontInfo = new Int32Array(Pdfium.memory.buffer, this.sysFontInfo, 9);
+    sysFontInfo[3] = this._addFunction(
+      (pThis, weight, bItalic, charset, pitchFamily, face, bExact) =>
+        this.mapFont(pThis, weight, bItalic, charset, pitchFamily, face, bExact),
+      'iiiiiiii'
     );
-    if (!result) {
-      // the font face is missing
-      const faceName = StringUtils.utf8BytesToString(new Uint8Array(Pdfium.memory.buffer, face));
-      if (fontNamesToIgnore[faceName] || lastMissingFonts[faceName]) return 0;
-      lastMissingFonts[faceName] = {
+    sysFontInfo[5] = this._addFunction(
+      (pThis, hFont, table, buffer, bufSize) => this.getFontData(pThis, hFont, table, buffer, bufSize),
+      'iiiiii'
+    );
+    sysFontInfo[6] = this._addFunction((pThis, hFont, buffer, bufSize) => this.getFaceName(pThis, hFont, buffer, bufSize), 'iiiii');
+    sysFontInfo[7] = this._addFunction((pThis, hFont) => this.getFontCharset(pThis, hFont), 'iii');
+    sysFontInfo[8] = this._addFunction((pThis, hFont) => this.deleteFont(pThis, hFont), 'vii');
+  }
+
+  dispose() {
+    this.mappedFonts = {};
+    for (const pointer of this.functionPointers) {
+      Pdfium.removeFunction(pointer);
+    }
+    this.functionPointers = [];
+    Pdfium.wasmExports.free(this.sysFontInfo);
+  }
+
+  _addFunction(func, sig) {
+    const pointer = Pdfium.addFunction(func, sig);
+    this.functionPointers.push(pointer);
+    return pointer;
+  }
+
+  addFontData({ face, data, resolvedFace }) {
+    const font = { face, resolvedFace, data: new Uint8Array(data), charset: null };
+    this.cachedFontsByFace[face] = font;
+    if (resolvedFace && resolvedFace !== face) {
+      this.aliases[face] = resolvedFace;
+      this.cachedFontsByFace[resolvedFace] = font;
+    }
+    delete this.missingFonts[face];
+    delete lastMissingFonts[face];
+  }
+
+  clear() {
+    this.cachedFontsByFace = {};
+    this.aliases = {};
+    this.missingFonts = {};
+  }
+
+  getAndClearMissingFonts() {
+    const result = this.missingFonts;
+    this.missingFonts = {};
+    return result;
+  }
+
+  mapFont(_pThis, weight, bItalic, charset, pitchFamily, face, bExact) {
+    const faceName = StringUtils.utf8BytesToString(new Uint8Array(Pdfium.memory.buffer, face));
+    const cachedFont = this.cachedFontsByFace[faceName] ?? this.cachedFontsByFace[this.aliases[faceName]];
+    if (cachedFont) {
+      cachedFont.charset ??= charset;
+      if (bExact) new Int32Array(Pdfium.memory.buffer, bExact, 1)[0] = 1;
+      return this._createMappedFontHandle(cachedFont);
+    }
+    if (!fontNamesToIgnore[faceName] && !this.missingFonts[faceName]) {
+      this.missingFonts[faceName] = {
         face: faceName,
         weight: weight,
         italic: !!bItalic,
         charset: charset,
         pitchFamily: pitchFamily,
       };
+      lastMissingFonts[faceName] = this.missingFonts[faceName];
     }
-    return result;
-  }, 'iiiiiiii');
-
-  // when registering a new SetSystemFontInfo, the previous one is automatically released
-  // and the only last one remains on memory
-  Pdfium.wasmExports.FPDF_SetSystemFontInfo(sysFontInfoBuffer);
-}
-
-/**
- * Reload fonts in PDFium.
- *
- * The function is based on the fact that PDFium reloads all the fonts when FPDF_SetSystemFontInfo is called.
- */
-function reloadFonts() {
-  console.log('Reloading system fonts in PDFium...');
-  _initializeFontEnvironment();
-  return { message: 'Fonts reloaded' };
-}
-/**
- * @type {{[face: string]: string}}
- */
-const fontFileNames = {};
-let fontFilesId = 0;
-
-/**
- * Add font data to the file system.
- * @param {{face: string, data: ArrayBuffer}} params
- */
-function addFontData(params) {
-  console.log(`Adding font data for face: ${params.face}`);
-  const { face, data } = params;
-  fontFileNames[face] ??= `font_${++fontFilesId}.ttf`;
-  fileSystem.registerFileWithData(`/usr/share/fonts/${fontFileNames[face]}`, data);
-  fileSystem.registerFile('/usr/share/fonts', { entries: Object.values(fontFileNames) });
-  return { message: `Font ${face} added`, face: face, fileName: fontFileNames[face] };
-}
-
-function clearAllFontData() {
-  console.log(`Clearing all font data`);
-  for (const face in fontFileNames) {
-    const fileName = fontFileNames[face];
-    fileSystem.unregisterFile(`/usr/share/fonts/${fileName}`);
+    return 0;
   }
-  fileSystem.registerFile('/usr/share/fonts', { entries: [] });
-  fontFileNames = {};
+
+  getFontData(_pThis, hFont, table, buffer, bufSize) {
+    const font = this.mappedFonts[hFont];
+    if (!font) return 0;
+    const data = table === 0 ? font.data : getFontTableData(font.data, table);
+    if (!data) return 0;
+    if (!buffer || bufSize < data.byteLength) return data.byteLength;
+    new Uint8Array(Pdfium.memory.buffer, buffer, data.byteLength).set(data);
+    return data.byteLength;
+  }
+
+  getFaceName(_pThis, hFont, buffer, bufSize) {
+    const font = this.mappedFonts[hFont];
+    if (!font) return 0;
+    const name = font.resolvedFace ?? font.face;
+    const length = StringUtils.lengthBytesUTF8(name) + 1;
+    if (!buffer || bufSize < length) return length;
+    StringUtils.stringToUtf8Bytes(name, new Uint8Array(Pdfium.memory.buffer, buffer, length));
+    return length;
+  }
+
+  getFontCharset(_pThis, hFont) {
+    const font = this.mappedFonts[hFont];
+    return font?.charset ?? 1;
+  }
+
+  deleteFont(_pThis, hFont) {
+    if (!this.mappedFonts[hFont]) return;
+    delete this.mappedFonts[hFont];
+  }
+
+  _createMappedFontHandle(font) {
+    const handle = this.nextMappedFontHandle++;
+    this.mappedFonts[handle] = font;
+    return handle;
+  }
+}
+
+function getFontTableData(data, table) {
+  const fontOffset = getFontOffset(data);
+  if (fontOffset === null || fontOffset + 12 > data.byteLength) return null;
+  const numTables = readUint16(data, fontOffset + 4);
+  let tableRecordOffset = fontOffset + 12;
+  for (let i = 0; i < numTables; i++) {
+    if (tableRecordOffset + 16 > data.byteLength) return null;
+    if (readUint32(data, tableRecordOffset) === table) {
+      const offset = readUint32(data, tableRecordOffset + 8);
+      const length = readUint32(data, tableRecordOffset + 12);
+      if (offset + length > data.byteLength) return null;
+      return data.subarray(offset, offset + length);
+    }
+    tableRecordOffset += 16;
+  }
+  return null;
+}
+
+function getFontOffset(data) {
+  if (data.byteLength < 12) return null;
+  const ttcTag = 0x74746366;
+  if (readUint32(data, 0) !== ttcTag) return 0;
+  if (data.byteLength < 16) return null;
+  const numFonts = readUint32(data, 8);
+  if (numFonts < 1) return null;
+  const offset = readUint32(data, 12);
+  if (offset >= data.byteLength) return null;
+  return offset;
+}
+
+function readUint16(data, offset) {
+  return (data[offset] << 8) | data[offset + 1];
+}
+
+function readUint32(data, offset) {
+  return (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+}
+
+/**
+ * Add font data to the font cache.
+ * @param {{face: string, data: ArrayBuffer, resolvedFace: string|undefined}} params
+ */
+async function addFontData(params) {
+  console.log(`Adding font data for face: ${params.face}`);
+  const { face, data, resolvedFace } = params;
+  pdfFontMapper?.addFontData({ face, data, resolvedFace });
+  await PdfFontPersistentCache.instance.put({ face, data, resolvedFace });
+  return { message: `Font ${face} added`, face: face };
+}
+
+async function clearAllFontData() {
+  console.log(`Clearing all font data`);
+  pdfFontMapper?.clear();
+  await PdfFontPersistentCache.instance.clear();
   return { message: 'All font data cleared' };
 }
 
@@ -2243,7 +3006,7 @@ async function initializePdfium(params = {}) {
 
     Pdfium.initWith(result.instance.exports);
     Pdfium.wasmExports.FPDF_InitLibrary();
-    _initializeFontEnvironment();
+    await _installFontMapper();
 
     pdfiumInitialized = true;
 

@@ -17,25 +17,30 @@ For pure Dart apps (or even some of Flutter apps), you can use [pdfrxInitialize]
 Basically, these initialization functions do the following things:
 
 - Call [WidgetsFlutterBinding.ensureInitialized](https://api.flutter.dev/flutter/widgets/WidgetsFlutterBinding/ensureInitialized.html) (Flutter only)
-- Set [Pdfrx.getCacheDirectory](https://pub.dev/documentation/pdfrx/latest/pdfrx/Pdfrx/getCacheDirectory.html)
+- Set [Pdfrx.cacheDirectoryPath](https://pub.dev/documentation/pdfrx/latest/pdfrx/Pdfrx/cacheDirectoryPath.html)
 - Map PdfDocument [factory/interop functions](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfrxEntryFunctions-class.html) to actual platform ones
 - Set [Pdfrx.loadAsset](https://pub.dev/documentation/pdfrx/latest/pdfrx/Pdfrx/loadAsset.html) (Flutter only)
-- Download PDFium binary on-demand ([pdfrxInitialize](https://pub.dev/documentation/pdfrx/latest/pdfrx/pdfrxInitialize.html) only)
+- Configure the PDFium module path from `PDFIUM_PATH` when explicitly provided
 - Call [PdfrxEntryFunctions.init](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfrxEntryFunctions/init.html) to initialize the PDFium library (internally calls `FPDF_InitLibraryWithConfig`)
 
 ## Cache Directory
 
-The mechanism to locate cache directory is different between pure Dart apps and Flutter apps:
+The mechanism to set [Pdfrx.cacheDirectoryPath](https://pub.dev/documentation/pdfrx/latest/pdfrx/Pdfrx/cacheDirectoryPath.html) is different between pure Dart apps and Flutter apps:
 
 Init. Func. | Underlying API | Notes
 ------------|----------------|-------------------
 [pdfrxInitialize](https://pub.dev/documentation/pdfrx/latest/pdfrx/pdfrxInitialize.html) | [Directory.systemTemp](https://api.flutter.dev/flutter/dart-io/Directory/systemTemp.html) | May not be suitable for mobile apps.
 [pdfrxFlutterInitialize](https://pub.dev/documentation/pdfrx/latest/pdfrx/pdfrxFlutterInitialize.html) | [path_provider.getTemporaryDirectory](https://pub.dev/documentation/path_provider/latest/path_provider/getTemporaryDirectory.html) | Always app local directory.
 
-## Download PDFium Binary On-Demand
+`PdfFontManager` uses `${Pdfrx.cacheDirectoryPath}/pdfrx.fonts` as its default font cache directory. If you use [PdfDocument](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocument-class.html) directly and want cached fonts to be available during the first document load, initialize pdfrx or set `Pdfrx.cacheDirectoryPath` before creating/preparing the font manager.
 
-For pure Dart apps, because it is typically used on desktop environments, pdfrx downloads PDFium binary if your environment does not have it.
+## PDFium Native Library
 
-- PDFium binaries are downloaded from <https://github.com/bblanchon/pdfium-binaries/releases>
-- By default, the binary is downloaded to `[TMP_DIR]/pdfrx.cache`
-- You can explicitly specify `libpdfium` shared library file path/name by `PDFIUM_PATH` environment variable
+For pure Dart apps, PDFium is provided as a Dart native asset. The native library is downloaded and bundled at build time by the package build hook. This includes macOS CLI commands such as `dart test`, `dart run`, and `dart compile`, which use the native asset `libpdfium.dylib`.
+
+For Flutter apps, `pdfium_flutter` is the recommended PDFium integration package for every native platform except Web. It uses native asset packaging on Android, Windows, and Linux, and the PDFium XCFramework on iOS and macOS. `pdfium_dart` detects Flutter on iOS/macOS and resolves PDFium from the linked XCFramework rather than loading the macOS native asset.
+
+- PDFium binaries are downloaded from <https://github.com/bblanchon/pdfium-binaries/releases> during build
+- Linux Flutter builds resolve `libpdfium.so` from the app's shared library directory relative to the executable
+- You can explicitly specify a `libpdfium` shared library path by setting the `PDFIUM_PATH` environment variable
+- Web builds use PDFium WASM instead of FFI

@@ -42,35 +42,53 @@ Merge `upstream/pdfrx-v2.4.1` into fork (no `2.4.2` exists). Preserve annotation
 ### Phase 2: Merge + conflict survey
 
 - **Goal**: merge committed (with conflict markers), full file-level map of conflicts
-- [ ] `git merge --no-ff --no-commit upstream/pdfrx-v2.4.1` (or commit immediately with markers — pick one)
-- [ ] Capture `git status --short` output → save as conflict survey for PR description
-- [ ] Categorize each conflicted file: (a) take upstream, (b) take fork, (c) hand-merge
-- [ ] Expected hand-merge files: `packages/pdfrx/lib/src/widgets/pdf_viewer.dart`, `packages/pdfrx/lib/src/widgets/pdf_viewer_params.dart`, `packages/pdfrx/lib/pdfrx.dart`, possibly `packages/pdfrx/pubspec.yaml` (executables block + version), example pubspecs
-- [ ] Verify: merge commit exists; conflict survey saved
+- [x] `git merge --no-ff --no-commit upstream/pdfrx-v2.4.1` (or commit immediately with markers — pick one) — used `--no-commit`, merge committed at end of Phase 3
+- [x] Capture `git status --short` output → save as conflict survey for PR description (13 conflicts: 12 UU + 1 UD)
+- [x] Categorize each conflicted file: (a) take upstream, (b) take fork, (c) hand-merge
+- [x] Expected hand-merge files: `packages/pdfrx/lib/src/widgets/pdf_viewer.dart`, `packages/pdfrx/lib/src/widgets/pdf_viewer_params.dart`, `packages/pdfrx/lib/pdfrx.dart`, possibly `packages/pdfrx/pubspec.yaml` (executables block + version), example pubspecs
+  - **Conflict categorization:**
+    - **Take upstream**: `README.md`, `packages/pdfrx/CHANGELOG.md`, `packages/pdfrx/README.md`, `packages/pdfrx_coregraphics/README.md`, 4× `generated_plugins.cmake` (Flutter-generated)
+    - **Hand-merge (annotation surface)**: `packages/pdfrx/lib/src/widgets/pdf_viewer.dart`, `packages/pdfrx/lib/src/widgets/pdf_viewer_params.dart`
+    - **Hand-merge (other)**: `packages/pdfrx/pubspec.yaml` (executables block + version), `packages/pdfrx/example/viewer/lib/main.dart`
+    - **Take upstream deletion (UD)**: `packages/pdfium_dart/lib/src/pdfium_downloader.dart` — superseded by `pdfium_loader.dart`
+  - **Note**: `lib/pdfrx.dart` (public exports) auto-merged cleanly — no conflict markers; verify fork exports survived during Phase 3
+  - **Note**: `packages/pdfium_flutter/android/` untracked dir contains stale build artifacts (`.cxx/`, `.lib/`) — must be cleaned during Phase 3
+- [x] Verify: merge commit exists; conflict survey saved (merge commit deferred to end of Phase 3)
 
 ### Phase 3: Resolve conflicts (`pdf_viewer.dart`, `pdf_viewer_params.dart`, exports, utility)
 
 - **Goal**: clean tree, fork hooks re-applied on upstream's new structure
-- [ ] `pdf_viewer.dart`: take upstream as base; re-apply each fork hook by reference (use line-map in Context)
-  - imports (annotation controller + layer)
-  - `navigationSuppressedByAnnotation` top-level helper
-  - `_annotationController` getter + listeners
-  - `_effectivePanEnabled` / `_effectiveScaleEnabled` gates on whatever upstream's new pan/scale surface is
-  - outer `Listener` wrapping `InteractiveViewer` (this is the hand-tool pointer pass-through)
-  - annotation layer mount in page overlay builder (preserve `rectExternal` consumer)
-  - `paintPageInkAnnotations(...)` call right after `pagePaintCallbacks` in page painter
-  - 6 navigation early-return gates (`_goTo`, `_goToArea`, `_goToPage`, `_goToRectInsidePage`, `_goToDest`, `_goToManipulated`)
-  - `annotationRenderingMode` passed to `page.render()` (2 sites)
-  - `PdfViewerController._annotationController` field + `_attach` listener set + `dispose()` + public API methods (L5425-5619 worth of surface)
-- [ ] `pdf_viewer_params.dart`: re-apply 7 fork params + assert + field docs + `FixedOverscrollPhysics.getScrollPhysics` helper + entries in `doChangesRequireReload` / `==` / `hashCode`. Co-exist with upstream's new delegate-provider params + `@Deprecated` legacy sizing params (do not migrate)
-- [ ] `lib/pdfrx.dart`: confirm all 12 export lines remain; in particular L12-17 fork-added block (instant_json, annotation_controller `show` clause, ink/stamp/definition, fixed_overscroll_physics). Accept upstream's 10 new exports for scroll/size/zoom delegates + layout_metrics
-- [ ] `lib/src/utils/fixed_overscroll_physics.dart`: untouched
-- [ ] `lib/src/utils/{double_extensions,edge_insets_extensions,platform}.dart` + `native/` + `web/`: take upstream
-- [ ] `packages/pdfrx/pubspec.yaml`: take upstream version + constraints; preserve `executables:` block if it survives upstream
-- [ ] Pubspec metadata (`homepage`, `repository`, `issue_tracker`): leave pointing to upstream — no change
-- [ ] Three example pubspecs: take upstream constraints; relax fork-side example constraints only if `flutter pub get` errors
-- [ ] Run `flutter pub get` at workspace root; resolve any constraint conflicts
-- [ ] Verify: no conflict markers (`rg '<<<<<<<' packages/`), `flutter pub get` clean, `flutter analyze` clean across all packages and examples
+- [x] `pdf_viewer.dart`: take upstream as base; re-apply each fork hook by reference (use line-map in Context)
+  - imports (annotation controller + layer) [auto-merged, untouched]
+  - `navigationSuppressedByAnnotation` top-level helper [auto-merged, untouched]
+  - `_annotationController` getter + listeners [auto-merged, untouched]
+  - `_effectivePanEnabled` / `_effectiveScaleEnabled` gates on whatever upstream's new pan/scale surface is [re-applied in build method conflict resolution]
+  - outer `Listener` wrapping `InteractiveViewer` [preserved through conflict resolution; also wrapped in upstream's `_PdfOverlayHitTesterScope` + `ExcludeSemantics`]
+  - annotation layer mount in page overlay builder [auto-merged, untouched]
+  - `paintPageInkAnnotations(...)` call right after `pagePaintCallbacks` in page painter [auto-merged, untouched]
+  - 6 navigation early-return gates (`_goTo`, `_goToArea`, `_goToPage`, `_goToRectInsidePage`, `_goToDest`, `_goToManipulated`) [re-applied in conflict resolutions]
+  - `annotationRenderingMode` passed to `page.render()` (2 sites) [auto-merged, untouched]
+  - `PdfViewerController._annotationController` field + `_attach` listener set + `dispose()` + public API methods [auto-merged before conflict region; upstream's 319-line API addition appended after fork's annotation API]
+- [x] `pdf_viewer_params.dart`: re-apply 7 fork params + assert + field docs + `FixedOverscrollPhysics.getScrollPhysics` helper + entries in `doChangesRequireReload` / `==` / `hashCode`. Co-exist with upstream's new delegate-provider params + `@Deprecated` legacy sizing params (do not migrate) [strategy: `git checkout --theirs` to upstream base, then surgically re-applied fork additions: `fitMode`/`pageTransition`, 6 annotation params, stamp assert, `PdfAnnotationsChangedCallback` typedef, equality + hashCode entries; upstream's `getScrollPhysics` helper already in upstream]
+- [x] `lib/pdfrx.dart`: confirm all 12 export lines remain; in particular L12-17 fork-added block (instant_json, annotation_controller `show` clause, ink/stamp/definition, fixed_overscroll_physics). Accept upstream's 10 new exports for scroll/size/zoom delegates + layout_metrics [Rewrote file to union: 12 fork exports + 9 new upstream exports — `pdf_viewer_layout_metrics`, `scroll_interaction/*` (3), `sizing/*` (3), `zoom_steps/*` (3)]
+- [x] `lib/src/utils/fixed_overscroll_physics.dart`: untouched [confirmed]
+- [x] `lib/src/utils/{double_extensions,edge_insets_extensions,platform}.dart` + `native/` + `web/`: take upstream [auto-merged]
+- [x] `packages/pdfrx/pubspec.yaml`: take upstream version + constraints; preserve `executables:` block if it survives upstream [version 2.4.1, executables block preserved]
+- [x] Pubspec metadata (`homepage`, `repository`, `issue_tracker`): leave pointing to upstream — no change [unchanged]
+- [x] Three example pubspecs: take upstream constraints; relax fork-side example constraints only if `flutter pub get` errors [no manual changes needed; `flutter pub get` succeeded]
+- [x] Run `flutter pub get` at workspace root; resolve any constraint conflicts [succeeded]
+- [x] Verify: no conflict markers (`rg '<<<<<<<' packages/`), `flutter pub get` clean, `flutter analyze` clean across all packages and examples [no errors; 5 info-level warnings: 1 expected `maxScale` deprecation in music_viewer (per plan: do not migrate), 1 pre-existing upstream `_isDraggingHandle` lint, 2 dartdoc comment references, 1 pre-existing `pdf_file_cache` lint]
+- **Additional surgical changes required:**
+  - Manually staged the 10 new upstream files that `git merge` neither flagged as conflicts nor checked out: `pdf_viewer_layout_metrics.dart`, `scroll_interaction/` (3 files), `sizing/` (3 files), `zoom_steps/` (3 files)
+  - Added `pdf_page_layout.dart` imports to `sizing/` delegate files (upstream didn't import this since it referenced via `pdfrx.dart`)
+  - Added `_goToPosition` controller method (referenced by upstream sizing delegates; fork's `_state._goToPosition` already existed)
+  - Made `widget.params.maxScale ?? 8.0` substitution at 4 sites in `pdf_viewer.dart` (param is now nullable upstream)
+  - Made `widget.params.onePassRenderingScaleThreshold ?? 200 / 72` substitution at 1 site
+  - Updated `widget.params.useAlternativeFitScaleAsMinScale` from `bool` → `bool?` handling at 2 sites
+  - Updated `PdfPageLayoutFunction` typedef from 2-arg → 3-arg (`PdfLayoutHelper helper`) — matches fork's internal `_layoutPages` already-3-arg signature
+  - Updated `test/pdf_viewer_test.dart` to use 3-arg `layoutPages` signature
+  - Removed `onPointerScale` reference from build method (fork's `interactive_viewer.dart` doesn't accept this upstream callback; trackpad-zoom feature deferred as follow-up)
+  - Cleaned stale `packages/pdfium_flutter/android/.cxx/` and `.lib/` build artifacts (Android plugin scaffolding deleted upstream)
 
 ### Phase 4: Native-assets PDFium build verification
 

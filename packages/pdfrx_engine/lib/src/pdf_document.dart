@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'pdf_document_event.dart';
+import 'pdf_font_resolver.dart';
 import 'pdf_outline_node.dart';
 import 'pdf_page.dart';
 import 'pdf_permissions.dart';
@@ -170,7 +171,7 @@ abstract class PdfDocument {
 
   /// Opening the PDF from URI.
   ///
-  /// For Flutter Web, the implementation uses browser's function and restricted by CORS.
+  /// For Flutter Web, the implementation uses browser APIs and is restricted by CORS.
   // ignore: comment_references
   /// For other platforms, it uses [pdfDocumentFromUri] that uses HTTP's range request to download the file.
   ///
@@ -184,7 +185,8 @@ abstract class PdfDocument {
   ///
   /// [progressCallback] is called when the download progress is updated.
   ///
-  /// [preferRangeAccess] to prefer range access to download the PDF. The default is false (Not supported on Web).
+  /// [preferRangeAccess] to prefer range access to download the PDF. The default is false.
+  /// On Web, range access requires a CORS-enabled server that supports range requests.
   /// It is not supported if pdfrx is running without libpdfrx (**typically on Dart only**).
   ///
   /// [headers] is used to specify additional HTTP headers especially for authentication/authorization.
@@ -289,7 +291,44 @@ abstract class PdfDocument {
   ///
   /// [pageNumbersToReload] is the list of page numbers (1-based) to reload. If null, all pages are reloaded.
   Future<void> reloadPages({List<int>? pageNumbersToReload});
+
+  /// Associate a [PdfFontManager] to the document to handle font loading/substitution for missing fonts.
+  ///
+  /// [onLoadComplete] callback is called when the missing font loading process is completed regardless of
+  /// the success or failure of loading each font.
+  ///
+  /// It is your responsibility to check the result in [onLoadComplete] and reload the document if necessary;
+  /// The [PdfDocument] that invokes [onLoadComplete] NEVER refreshes itself. You should open the PDF file again
+  /// by calling `PdfDocument.open*()` function to obtain another [PdfDocument] instance to refresh the document with
+  /// the loaded fonts.
+  ///
+  /// The function returns a [PdfFontManagerAssociation] which can be used to dispose the association
+  /// when it's no longer needed.
+  ///
+  /// The returned [PdfFontManagerAssociation] should be kept alive while the association is needed and disposed
+  /// to remove the association when it's no longer needed.
+  PdfFontManagerAssociation associateFontManager(
+    PdfFontManager fontManager, {
+    PdfFontLoadResultCallback? onLoadComplete,
+    PdfFontLoadProgressCallback? onProgress,
+  }) {
+    return PdfFontManagerAssociation(
+      fontManager,
+      onLoadComplete == null
+          ? null
+          : events.listen((event) {
+              if (event is PdfDocumentMissingFontsEvent) {
+                Future.microtask(
+                  () async =>
+                      onLoadComplete(await fontManager.loadMissingFonts(event.missingFonts, onProgress: onProgress)),
+                );
+              }
+            }),
+    );
+  }
 }
+
+typedef PdfFontLoadResultCallback = void Function(PdfFontLoadResult result);
 
 typedef PdfPageLoadingCallback<T> = FutureOr<bool> Function(int currentPageNumber, int totalPageCount, T? data);
 

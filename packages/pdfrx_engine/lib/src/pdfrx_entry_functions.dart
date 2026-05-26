@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import './mock/pdfrx_mock.dart' if (dart.library.io) './native/pdfrx_pdfium.dart';
 import 'pdf_document.dart';
-import 'pdfrx.dart';
 
 /// The class is used to implement Pdfrx's backend functions.
 ///
@@ -15,7 +14,14 @@ abstract class PdfrxEntryFunctions {
   /// Singleton instance of [PdfrxEntryFunctions].
   ///
   /// [PdfDocument] internally calls this instance to open PDF files.
-  static PdfrxEntryFunctions instance = PdfrxEntryFunctionsImpl();
+  static PdfrxEntryFunctions _instance = PdfrxEntryFunctionsImpl();
+
+  static PdfrxEntryFunctions get instance => _instance;
+
+  static set instance(PdfrxEntryFunctions entryFunctions) {
+    print('Setting PdfrxEntryFunctions instance: $entryFunctions');
+    _instance = entryFunctions;
+  }
 
   /// Call `FPDF_InitLibraryWithConfig` to initialize the PDFium library.
   ///
@@ -117,17 +123,30 @@ abstract class PdfrxEntryFunctions {
     required String sourceName,
   });
 
-  /// Reload the fonts.
+  /// Configure the font environment used by the backend.
+  ///
+  /// [fontCachePath] is the app-local font cache directory used by [addFontData].
+  /// If null, [addFontData] may still register fonts for the current process, but the fonts are not persisted by the
+  /// native PDFium backend.
+  /// [fontPaths] are additional font files or directories scanned by backends that support local files.
+  Future<void> configureFontEnvironment({String? fontCachePath, List<String> fontPaths = const []});
+
+  /// Refresh the backend font mapper state.
   Future<void> reloadFonts();
 
   /// Add font data to font cache.
   ///
-  /// For Web platform, this is the only way to add custom fonts (the fonts are cached on memory).
+  /// For Web platform, this is the only way to add custom fonts. The fonts are persisted in IndexedDB and
+  /// restored into the WASM worker memory cache when the worker initializes.
   ///
-  /// For other platforms, the font data is cached on temporary files in the cache directory; if you want to keep
-  /// the font data permanently, you should save the font data to some other persistent storage and set its path
-  /// to [Pdfrx.fontPaths].
-  Future<void> addFontData({required String face, required Uint8List data});
+  /// For other platforms, the font data is cached under the font cache path configured by [configureFontEnvironment].
+  Future<void> addFontData({required String face, required Uint8List data, String? resolvedFace});
+
+  /// Add a local font file without copying it into the app-local font cache.
+  ///
+  /// Native PDFium uses this for fonts found in configured platform font directories. Backends that cannot
+  /// synchronously read arbitrary local files may ignore this.
+  Future<void> addFontFile({required String face, required String filePath, String? resolvedFace});
 
   /// Clear all font data added by [addFontData].
   Future<void> clearAllFontData();

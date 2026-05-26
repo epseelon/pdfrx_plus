@@ -3,12 +3,11 @@ import 'dart:math';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'google_fonts_resolver.dart';
 import 'markers_view.dart';
-import 'noto_google_fonts.dart';
 import 'outline_view.dart';
 import 'password_dialog.dart';
 import 'search_view.dart';
@@ -48,8 +47,11 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   final outline = ValueNotifier<List<PdfOutlineNode>?>(null);
   final textSearcher = ValueNotifier<PdfTextSearcher?>(null);
   final _markers = <int, List<Marker>>{};
+  final _fontManager = PdfFontManager.platform(resolvers: [CompositeGoogleFontsResolver()]);
   List<PdfPageTextRange>? textSelections;
 
+  // ignore: unused_field
+  bool _isDraggingHandle = false;
   // Magnifier animation controller
   late final AnimationController _magnifierAnimController = AnimationController(
     duration: const Duration(milliseconds: 250),
@@ -304,6 +306,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       // Set password provider to show password dialog
                       //passwordProvider: () => passwordDialog(context),
                       controller: controller,
+                      fontManager: _fontManager,
                       params: PdfViewerParams(
                         layoutPages: _layoutPages[_layoutTypeIndex],
                         scrollHorizontallyByMouseWheel: isHorizontalLayout,
@@ -445,7 +448,12 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                           },
                         ),
                         keyHandlerParams: PdfViewerKeyHandlerParams(autofocus: true),
-                        maxScale: 8,
+                        sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(
+                          useAlternativeFitScaleAsMinScale: false,
+                          maxScale: 8,
+                        ),
+                        // #547: At least, on Flutter Web on Windows, the default scroll physics
+                        // seems to have some issues with zooming and we don't use it here.
                         //scrollPhysics: PdfViewerParams.getScrollPhysics(context),
                         //pageTransition: PageTransition.discrete,
                         customizeContextMenuItems: (params, items) {
@@ -557,31 +565,6 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                           outline.value = await document.loadOutline();
                           textSearcher.value = PdfTextSearcher(controller)..addListener(_update);
                           controller.requestFocus();
-                          controller.document.events.listen((event) {
-                            if (event is PdfDocumentMissingFontsEvent) {
-                              Future.microtask(() async {
-                                // NOTE: This is just an example of downloading missing fonts from Google Fonts.
-                                // In real-world use cases, you might want to have a more sophisticated
-                                // mechanism to manage the fonts.
-                                debugPrint('Missing fonts: ${event.missingFonts.map((f) => f.toString()).join(', ')}');
-                                int count = 0;
-                                for (final font in event.missingFonts) {
-                                  final gf = getGoogleFontsUriFromFontQuery(font);
-                                  if (gf != null) {
-                                    debugPrint('Downloading font "${gf.faceName}" from ${gf.uri}...');
-                                    final downloaded = (await http.get(gf.uri)).bodyBytes;
-                                    debugPrint('  Downloaded ${downloaded.length} bytes');
-                                    await PdfrxEntryFunctions.instance.addFontData(face: font.face, data: downloaded);
-                                    count++;
-                                  }
-                                }
-                                if (count > 0) {
-                                  await PdfrxEntryFunctions.instance.reloadFonts();
-                                  await controller.documentRef.resolveListenable().load(forceReload: true);
-                                }
-                              });
-                            }
-                          });
                         },
                       ),
                     );

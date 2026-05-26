@@ -5,15 +5,15 @@
 - **Never bump versions or changelog entries preemptively** - only when explicitly releasing
 - Surface blockers or uncertainties to the user before continuing a release flow
 - `CHANGELOG.md` should be updated only when releasing a new version
-- Skip CI/CD updates and meta-doc changes (`CLAUDE.md`, `AGENTS.md`, and `doc/agents/*md`) in changelogs unless significant
+- Skip CI/CD updates and meta-doc changes (`CLAUDE.md`, `AGENTS.md`, and `doc/agents/*.md`) in changelogs unless significant
 
 ## Release Order
 
 Packages must be published in dependency order:
 
 1. **pdfium_dart** (if changed)
-2. **pdfium_flutter** (depends on pdfium_dart)
-3. **pdfrx_engine** (depends on pdfium_dart)
+2. **pdfrx_engine** (depends on pdfium_dart)
+3. **pdfium_flutter** (depends on pdfium_dart)
 4. **pdfrx_coregraphics** (depends on pdfrx_engine)
 5. **pdfrx** (depends on pdfrx_engine, pdfium_flutter)
 
@@ -33,9 +33,10 @@ For each package being released:
 2. Update version in `pubspec.yaml`
 3. Update dependency versions in dependent packages
 4. Update version references in `README.md` examples
-5. Update the root `README.md` if necessary
-6. Run dry-run: `dart pub publish --dry-run` or `flutter pub publish --dry-run`
-7. Run `pana` to validate package quality
+5. For `pdfium_dart`, verify native asset build hooks still download and expose PDFium correctly
+6. Update the root `README.md` if necessary
+7. Run dry-run: `dart pub publish --dry-run` or `flutter pub publish --dry-run`
+8. Run `pana` to validate package quality
 
 ### pdfrx-Specific Steps
 
@@ -49,9 +50,7 @@ Update platform-specific build configurations if PDFium binaries changed:
 
 - `darwin/pdfium_flutter.podspec` for iOS/macOS (CocoaPods)
 - `darwin/pdfium_flutter/Package.swift` for Swift Package Manager
-- `android/CMakeLists.txt` for Android
-- `windows/CMakeLists.txt` for Windows
-- `linux/CMakeLists.txt` for Linux
+- Android, Windows, and Linux PDFium binaries are handled by native assets
 
 ## Publishing
 
@@ -87,7 +86,7 @@ Before tagging, commit all release changes:
 
 ```bash
 git add -A
-git commit -m "Release pdfrx 2.2.19, pdfrx_engine 0.3.7, etc."
+git commit -m "Release pdfrx X.Y.Z and related packages"
 git push
 ```
 
@@ -97,11 +96,11 @@ After publishing, create git tags for each released package and push them:
 
 ```bash
 # Tag format: <package>-v<version>
-git tag pdfium_dart-v0.1.3
-git tag pdfium_flutter-v0.1.8
-git tag pdfrx_engine-v0.3.7
-git tag pdfrx-v2.2.19
-git tag pdfrx_coregraphics-v0.1.11
+git tag pdfium_dart-vX.Y.Z
+git tag pdfium_flutter-vX.Y.Z
+git tag pdfrx_engine-vX.Y.Z
+git tag pdfrx-vX.Y.Z
+git tag pdfrx_coregraphics-vX.Y.Z
 
 # Push all tags
 git push --tags

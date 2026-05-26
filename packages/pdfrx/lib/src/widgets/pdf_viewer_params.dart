@@ -3,9 +3,22 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:pdfrx_engine/pdfrx_engine.dart';
 
-import '../../pdfrx.dart';
+import '../pdf_document_ref.dart';
+import '../utils/fixed_overscroll_physics.dart';
 import '../utils/platform.dart';
+import 'annotations/pdf_stamp_definition.dart';
+import 'pdf_page_layout.dart';
+import 'pdf_viewer.dart';
+import 'pdf_viewer_scroll_thumb.dart';
+import 'scroll_interaction/pdf_viewer_scroll_interaction_delegate.dart';
+import 'scroll_interaction/pdf_viewer_scroll_interaction_delegate_instant.dart';
+import 'scroll_interaction/pdf_viewer_scroll_interaction_delegate_physics.dart';
+import 'sizing/pdf_viewer_size_delegate.dart';
+import 'sizing/pdf_viewer_size_delegate_legacy.dart';
+import 'zoom_steps/pdf_viewer_zoom_steps_delegate.dart';
+import 'zoom_steps/pdf_viewer_zoom_steps_delegate_default.dart';
 
 /// Viewer customization parameters.
 ///
@@ -20,18 +33,26 @@ class PdfViewerParams {
     this.normalizeMatrix,
     this.fitMode = FitMode.fit,
     this.pageTransition = PageTransition.continuous,
-    this.maxScale = 8.0,
-    this.minScale,
-    this.useAlternativeFitScaleAsMinScale = false,
+    @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(maxScale: ...) instead') this.maxScale,
+    @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(minScale: ...) instead') this.minScale,
+    @Deprecated(
+      'Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(useAlternativeFitScaleAsMinScale: ...) instead',
+    )
+    this.useAlternativeFitScaleAsMinScale,
     this.panAxis = PanAxis.free,
     this.boundaryMargin,
     this.annotationRenderingMode = PdfAnnotationRenderingMode.annotationAndForms,
     this.limitRenderingCache = true,
     this.pageAnchor = PdfPageAnchor.top,
+    this.underflowAnchor,
     this.pageAnchorEnd = PdfPageAnchor.bottom,
-    this.onePassRenderingScaleThreshold = 200 / 72,
+    @Deprecated(
+      'Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(onePassRenderingScaleThreshold: ...) instead',
+    )
+    this.onePassRenderingScaleThreshold,
     this.onePassRenderingSizeThreshold = 2000,
     this.textSelectionParams,
+    this.forceEnableTextSemantics = false,
     this.matchTextColor,
     this.activeMatchTextColor,
     this.pageDropShadow = const BoxShadow(color: Colors.black54, blurRadius: 4, spreadRadius: 2, offset: Offset(2, 2)),
@@ -46,6 +67,7 @@ class PdfViewerParams {
     this.onDocumentChanged,
     this.onDocumentLoadFinished,
     this.calculateInitialPageNumber,
+    @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(calculateInitialZoom: ...) instead')
     this.calculateInitialZoom,
     this.calculateCurrentPageNumber,
     this.onViewerReady,
@@ -53,6 +75,7 @@ class PdfViewerParams {
     this.onPageChanged,
     this.getPageRenderingScale,
     this.scrollByMouseWheel = 0.2,
+    this.scaleByPointerScale = 1.0,
     this.scrollHorizontallyByMouseWheel = false,
     this.enableKeyboardNavigation = true,
     this.scrollByArrowKey = 25.0,
@@ -82,10 +105,24 @@ class PdfViewerParams {
     this.selectedStampPadding = 0.0,
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
+    this.interactionDelegateProvider = const PdfViewerScrollInteractionDelegateProviderInstant(),
+    this.sizeDelegateProvider,
+    this.zoomStepsDelegateProvider = const PdfViewerZoomStepsDelegateProviderDefault(),
   }) : scrollPhysics =
            scrollPhysics ?? (pageTransition == PageTransition.discrete ? const ClampingScrollPhysics() : null),
        assert(
-         !useAlternativeFitScaleAsMinScale || fitMode == FitMode.fit,
+         sizeDelegateProvider == null ||
+             (maxScale == null &&
+                 minScale == null &&
+                 useAlternativeFitScaleAsMinScale == null &&
+                 onePassRenderingScaleThreshold == null &&
+                 calculateInitialZoom == null),
+         'sizeDelegateProvider cannot be used together with the deprecated parameters: '
+         'maxScale, minScale, useAlternativeFitScaleAsMinScale, onePassRenderingScaleThreshold, or calculateInitialZoom. '
+         'Please configure these values in the sizeDelegateProvider instead.',
+       ),
+       assert(
+         useAlternativeFitScaleAsMinScale != true || fitMode == FitMode.fit,
          'useAlternativeFitScaleAsMinScale is deprecated and forces FitMode.fit behavior, '
          'making the fitMode parameter ($fitMode) ineffective. '
          'Remove the useAlternativeFitScaleAsMinScale parameter to use fitMode as intended.',
@@ -101,65 +138,6 @@ class PdfViewerParams {
 
   /// Background color of the viewer.
   final Color backgroundColor;
-
-  /// Called once on `PdfViewerController.exitAnnotationMode()` with the
-  /// current ink annotations serialized as Instant JSON. The viewer awaits
-  /// this future before fully exiting mode.
-  ///
-  /// Not fired by `applyAnnotationsFromJson` or `clearAnnotations`.
-  final PdfAnnotationsChangedCallback? onAnnotationsChanged;
-
-  /// Opacity stamped onto every newly-committed highlighter
-  /// ([PdfAnnotationTool.highlighter]) stroke. Default `0.35`. Clamped
-  /// to `[0.0, 1.0]` at use time.
-  ///
-  /// This is an integrator-level styling decision, not a user-tunable
-  /// per-session knob: there is no controller setter, no
-  /// [ValueListenable], and no `enterAnnotationMode` parameter for it
-  /// in v1. Changing the value mid-session requires rebuilding the
-  /// `PdfViewer` with new params; already-committed strokes retain
-  /// their original opacity, only newly-drawn strokes see the change.
-  final double highlighterOpacity;
-
-  /// Stamp library available to the user while
-  /// [PdfAnnotationTool.stamp] is active. `null` and an empty list are
-  /// equivalent — both disable the stamp tool entirely (no Stamp button
-  /// is rendered, no picker panel appears).
-  ///
-  /// Stamps are picker shortcuts only: when placed, their raw bytes are
-  /// embedded into the saved Instant JSON document as a SHA-256-keyed
-  /// attachment. Adding/removing/renaming items in the host's stamp
-  /// library never breaks past documents.
-  final List<PdfViewerStampCategory>? stampCategories;
-
-  /// Renderer for stamp images. Required when [stampCategories] is
-  /// non-empty (asserted at construction). Receives the raw bytes,
-  /// declared MIME type, and the exact display size in widget pixels;
-  /// must respect the requested size (no intrinsic sizing).
-  final PdfStampImageBuilder? stampImageBuilder;
-
-  /// Color of the selection outline, resize handles, rotation handle,
-  /// and delete button rendered around the currently selected stamp.
-  /// When `null`, falls back to `Theme.of(context).colorScheme.primary`.
-  final Color? selectedStampInterfaceColor;
-
-  /// Uniform padding, in screen pixels, inserted between a selected
-  /// stamp's symbol and its handle rectangle.
-  ///
-  /// Only affects a stamp while it is *selected*: the selection
-  /// outline, resize/rotation handles, delete button, and the body
-  /// ("move") hit-region are all inflated by this amount on every side,
-  /// while the rendered symbol stays at its true bounds. This spreads
-  /// the resize handles apart and enlarges the move target — important
-  /// for stamps whose aspect ratio is far from 1:1, where the short
-  /// axis would otherwise leave the handles too close together to grab
-  /// reliably on a touch screen.
-  ///
-  /// Measured in screen pixels (zoom-independent), matching the fixed
-  /// screen-pixel sizing of the handles themselves. The default `0.0`
-  /// reproduces the exact-fit selection box (handle rectangle equals
-  /// the symbol bounds).
-  final double selectedStampPadding;
 
   /// Function to customize the layout of the pages.
   ///
@@ -232,87 +210,40 @@ class PdfViewerParams {
   /// - [PageTransition.continuous]: Pages flow continuously in an uninterrupted scrollable view
   /// - [PageTransition.discrete]: Pages transition discretely, one page (or spread) at a time
   ///
-  /// When using [PageTransition.discrete]:
-  /// - Swipe gestures (velocity > 300 px/s) advance to next/previous page
-  /// - Drag gestures snap based on 50% threshold
-  /// - Only applies to pan-only gestures (zoom/pinch work normally)
-  /// - Only active at fit zoom level (free panning when zoomed in)
-  /// - Works with all layout types (single pages and facing pages)
-  /// - Provides a book-like reading experience
-  ///
-  /// Example:
-  /// ```dart
-  /// PdfViewer.asset(
-  ///   'assets/sample.pdf',
-  ///   params: PdfViewerParams(
-  ///     pageTransition: PageTransition.discrete,
-  ///   ),
-  /// )
-  /// ```
-  ///
   /// The default is [PageTransition.continuous].
   final PageTransition pageTransition;
 
   /// The maximum allowed scale.
   ///
   /// The default is 8.0.
-  final double maxScale;
+  @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(maxScale: ...) instead')
+  final double? maxScale;
 
-  /// The minimum allowed scale for zooming.
+  /// The minimum allowed scale.
   ///
-  /// - If `null` (default): The minimum scale is automatically calculated using the layout's
-  ///   `calculateFitScale()` method with the current [fitMode], ensuring content fits appropriately.
-  /// - If a value is provided: That value is used as the explicit minimum scale.
+  /// The default is 0.1.
   ///
-  /// **Note:** When [useAlternativeFitScaleAsMinScale] is `true` (deprecated), it overrides this setting.
-  ///
-  /// **Examples:**
-  /// ```dart
-  /// // Automatic calculation (recommended):
-  /// PdfViewerParams(minScale: null)  // or omit entirely
-  ///
-  /// // Explicit minimum scale:
-  /// PdfViewerParams(minScale: 0.5)
-  /// ```
+  /// Please note that the value is not used if [useAlternativeFitScaleAsMinScale] is true.
+  /// See [useAlternativeFitScaleAsMinScale] for the details.
+  @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(minScale: ...) instead')
   final double? minScale;
 
-  /// **DEPRECATED:** Use `fitMode` and `minScale` parameters instead.
+  /// If true, the minimum scale is set to the calculated [PdfViewerController.alternativeFitScale].
   ///
-  /// This legacy parameter controlled whether to force `FitMode.fit` behavior for fit scale calculation.
-  /// When `true`, the fit scale is always calculated as `FitMode.fit` regardless of the `fitMode` parameter.
-  /// When `false` (now default as of v2.3.0), the fit scale respects the `fitMode` parameter.
-  ///
-  /// **Breaking change in v2.3.0:** Default changed from `true` to `false`.
-  /// If you were relying on the old default, explicitly set this to `true`.
-  ///
-  /// **Important:** Explicit `minScale` values are now always honored regardless of this flag (fixed in v2.3.0).
-  /// Previously, when this flag was `true`, explicit `minScale` values were ignored.
-  ///
-  /// **Migration:**
-  /// - If you want the old behavior: Set `useAlternativeFitScaleAsMinScale: true` explicitly.
-  /// - If you want to allow zooming out beyond the fit scale: Set `minScale: 0.1` (or desired value).
-  /// - If you want different fit modes to work correctly: Remove this parameter or set to `false` (default).
-  ///
-  /// **Example:**
-  /// ```dart
-  /// // Old code (pre-v2.3.0):
-  /// PdfViewerParams(fitMode: FitMode.fill)  // Didn't work, behaved like FitMode.fit
-  ///
-  /// // New code (v2.3.0+):
-  /// PdfViewerParams(fitMode: FitMode.fill)  // Works correctly now
-  ///
-  /// // To keep old behavior:
-  /// PdfViewerParams(fitMode: FitMode.fill, useAlternativeFitScaleAsMinScale: true)
-  /// ```
-  @Deprecated('Use fitMode parameter instead. See documentation for migration guide.')
-  final bool useAlternativeFitScaleAsMinScale;
+  /// If the minimum scale is small value, it makes many pages visible inside the view and it finally
+  /// renders many pages at once. It may make the viewer to be slow or even crash due to high memory consumption.
+  /// So, it is recommended to set this to false if you want to show PDF documents with many pages.
+  @Deprecated(
+    'Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(useAlternativeFitScaleAsMinScale: ...) instead',
+  )
+  final bool? useAlternativeFitScaleAsMinScale;
 
   /// See [InteractiveViewer.panAxis] for details.
   final PanAxis panAxis;
 
   /// See [InteractiveViewer.boundaryMargin] for details.
   ///
-  /// The default is `EdgeInsets.all(double.infinity)`.
+  /// The default is `EdgeInsets.zero`.
   final EdgeInsets? boundaryMargin;
 
   /// Annotation rendering mode.
@@ -324,8 +255,21 @@ class PdfViewerParams {
   /// to reduce the memory consumption by image caching.
   final bool limitRenderingCache;
 
-  /// Anchor to position the page.
+  /// Anchor to position the page when navigating to a page or area.
+  ///
+  /// This does not control the legacy underflow centering behavior; use
+  /// [underflowAnchor] to control how the document is placed when it is smaller
+  /// than the viewport.
   final PdfPageAnchor pageAnchor;
+
+  /// Anchor to position the document when it is smaller than the viewport.
+  ///
+  /// If null, the document is centered on the underflowing axis to preserve
+  /// the legacy behavior. This legacy centering is different from
+  /// [PdfPageAnchor.center]: it only applies to axes where the document
+  /// underflows the viewport, while normal page navigation still uses
+  /// [pageAnchor].
+  final PdfPageAnchor? underflowAnchor;
 
   /// Anchor to position the page at the end of the page.
   final PdfPageAnchor pageAnchorEnd;
@@ -339,7 +283,10 @@ class PdfViewerParams {
   ///
   /// The default is 200 / 72, which implies rendering at 200 dpi.
   /// If you want more granular control for each page, use [getPageRenderingScale].
-  final double onePassRenderingScaleThreshold;
+  @Deprecated(
+    'Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(onePassRenderingScaleThreshold: ...) instead',
+  )
+  final double? onePassRenderingScaleThreshold;
 
   /// If a page is too large, the page is rendered with the size which fits within the threshold size (in pixels).
   ///
@@ -348,6 +295,16 @@ class PdfViewerParams {
 
   /// Parameters for text selection.
   final PdfTextSelectionParams? textSelectionParams;
+
+  /// If true, the viewer exposes extracted PDF text as Flutter semantics nodes
+  /// even when Flutter semantics are not currently enabled.
+  ///
+  /// By default, the viewer exposes text semantics only while Flutter semantics
+  /// are enabled, such as when a screen reader or the semantics debugger is active.
+  ///
+  /// This only works for PDFs whose text can be extracted as structured text.
+  /// Image-only scanned PDFs require OCR before they can expose readable text.
+  final bool forceEnableTextSemantics;
 
   /// Color for text search match.
   ///
@@ -456,6 +413,7 @@ class PdfViewerParams {
   final PdfViewerCalculateInitialPageNumberFunction? calculateInitialPageNumber;
 
   /// Function to calculate the initial zoom level.
+  @Deprecated('Use sizeDelegateProvider: PdfViewerSizeDelegateProviderLegacy(calculateInitialZoom: ...) instead')
   final PdfViewerCalculateZoomFunction? calculateInitialZoom;
 
   /// Function to guess the current page number based on the visible rectangle and page layouts.
@@ -468,6 +426,7 @@ class PdfViewerParams {
 
   /// Function to customize the rendering scale of the page.
   ///
+  // ignore: deprecated_member_use_from_same_package
   /// In some cases, if [maxScale]/[onePassRenderingScaleThreshold] is too large,
   /// certain pages may not be rendered correctly due to memory limitation,
   /// or anyway they may take too long to render.
@@ -504,6 +463,15 @@ class PdfViewerParams {
   /// Negative value to scroll opposite direction.
   /// null to disable scroll-by-mouse-wheel.
   final double? scrollByMouseWheel;
+
+  /// Scale sensitivity for pointer scale events (e.g. Trackpad pinch) and Ctrl+Scroll zoom interactions.
+  ///
+  /// Defaults to 1.0.
+  /// *   Values < 1.0 reduce the zoom speed (finer control).
+  /// *   Values > 1.0 increase the zoom speed (faster).
+  ///
+  /// This factor is applied to the raw scale delta received from the platform to determine the target zoom level.
+  final double scaleByPointerScale;
 
   /// If true, the scroll direction is horizontal when the mouse wheel is scrolled in primary direction.
   final bool scrollHorizontallyByMouseWheel;
@@ -551,8 +519,15 @@ class PdfViewerParams {
   ///
   /// For more information, see [PdfViewerScrollThumb].
   ///
+  /// To handle tap-like overlay interactions while still allowing the viewer to
+  /// handle panning, zooming, and link taps, wrap the overlay with
+  /// `PdfOverlayInteractionRegion`.
+  ///
   /// ### Note for using [GestureDetector] inside [viewerOverlayBuilder]:
-  /// You may want to use [GestureDetector] inside [viewerOverlayBuilder] to handle certain gesture events.
+  /// Prefer `PdfOverlayInteractionRegion` when the overlay only needs tap,
+  /// double tap, long press, or secondary tap.
+  ///
+  /// You may want to use [GestureDetector] inside [viewerOverlayBuilder] to handle lower-level gesture events.
   /// In such cases, your [GestureDetector] eats the gestures and the viewer cannot handle them directly.
   /// So, when you use [GestureDetector] inside [viewerOverlayBuilder], please ensure the following things:
   ///
@@ -594,6 +569,12 @@ class PdfViewerParams {
   /// - Overlay widgets returned by this function
   ///
   /// The most typical use case is to add page number footer to each page.
+  ///
+  /// If an overlay widget should handle gestures and still allow normal viewer
+  /// panning or zooming over it, wrap the overlay with `PdfOverlayInteractionRegion`.
+  /// It lets [PdfViewer] classify the gesture and dispatch tap-like interactions
+  /// to the overlay without making the overlay compete with the viewer in
+  /// Flutter's gesture arena.
   ///
   /// The following fragment illustrates how to add page number footer to each page:
   /// ```dart
@@ -697,15 +678,64 @@ class PdfViewerParams {
   /// sometimes it is useful to force reload the viewer by setting this to true.
   final bool forceReload;
 
+  /// Called once on `PdfViewerController.exitAnnotationMode()` with the
+  /// current ink annotations serialized as Instant JSON. The viewer awaits
+  /// this future before fully exiting mode.
+  ///
+  /// Not fired by `applyAnnotationsFromJson` or `clearAnnotations`.
+  final PdfAnnotationsChangedCallback? onAnnotationsChanged;
+
+  /// Opacity stamped onto every newly-committed highlighter
+  /// ([PdfAnnotationTool.highlighter]) stroke. Default `0.35`. Clamped
+  /// to `[0.0, 1.0]` at use time.
+  ///
+  /// This is an integrator-level styling decision, not a user-tunable
+  /// per-session knob: there is no controller setter, no
+  /// [ValueListenable], and no `enterAnnotationMode` parameter for it
+  /// in v1. Changing the value mid-session requires rebuilding the
+  /// `PdfViewer` with new params; already-committed strokes retain
+  /// their original opacity, only newly-drawn strokes see the change.
+  final double highlighterOpacity;
+
+  /// Stamp library available to the user while
+  /// [PdfAnnotationTool.stamp] is active. `null` and an empty list are
+  /// equivalent — both disable the stamp tool entirely (no Stamp button
+  /// is rendered, no picker panel appears).
+  ///
+  /// Stamps are picker shortcuts only: when placed, their raw bytes are
+  /// embedded into the saved Instant JSON document as a SHA-256-keyed
+  /// attachment. Adding/removing/renaming items in the host's stamp
+  /// library never breaks past documents.
+  final List<PdfViewerStampCategory>? stampCategories;
+
+  /// Renderer for stamp images. Required when [stampCategories] is
+  /// non-empty (asserted at construction). Receives the raw bytes,
+  /// declared MIME type, and the exact display size in widget pixels;
+  /// must respect the requested size (no intrinsic sizing).
+  final PdfStampImageBuilder? stampImageBuilder;
+
+  /// Color of the selection outline, resize handles, rotation handle,
+  /// and delete button rendered around the currently selected stamp.
+  /// When `null`, falls back to `Theme.of(context).colorScheme.primary`.
+  final Color? selectedStampInterfaceColor;
+
+  /// Uniform padding, in screen pixels, inserted between a selected
+  /// stamp's symbol and its handle rectangle.
+  ///
+  /// Only affects a stamp while it is *selected*: the selection
+  /// outline, resize/rotation handles, delete button, and the body
+  /// ("move") hit-region are all inflated by this amount on every side,
+  /// while the rendered symbol stays at its true bounds. Measured in
+  /// screen pixels (zoom-independent). The default `0.0` reproduces
+  /// the exact-fit selection box (handle rectangle equals the symbol
+  /// bounds).
+  final double selectedStampPadding;
+
   /// Scroll physics for the viewer.
   ///
   /// If null, default InteractiveViewer physics is used on all platforms. This physics clamps to boundaries,
   /// does not allow zooming beyond the min/max scale, and flings on panning come to rest quickly relative to
   /// Scrollables in Flutter (such as [SingleChildScrollView]).
-  ///
-  /// **Important for discrete mode:** When [pageTransition] is [PageTransition.discrete], scroll physics
-  /// are required for proper boundary snapping and settling behavior. If null in discrete mode,
-  /// [ClampingScrollPhysics] is automatically used as a fallback.
   ///
   /// A convenience function [getScrollPhysics] is provided to get platform-specific default scroll physics.
   /// If you want no overscroll, but still want the physics for panning to be similar to other Scrollables,
@@ -720,6 +750,25 @@ class PdfViewerParams {
   /// Scroll physics for scaling within the viewer. If null, it uses the same value as [scrollPhysics].
   final ScrollPhysics? scrollPhysicsScale;
 
+  /// Provider to create a delegate that handles scroll/zoom interactions (Mouse Wheel / Trackpad).
+  ///
+  /// Defaults to [PdfViewerScrollInteractionDelegateProviderInstant] which provides
+  /// instant updates (legacy behavior).
+  ///
+  /// To enable smooth, physics-based animations, use [PdfViewerScrollInteractionDelegateProviderPhysics].
+  final PdfViewerScrollInteractionDelegateProvider interactionDelegateProvider;
+
+  /// Provider to create a delegate that handles layout/size change logic.
+  ///
+  /// Defaults to [PdfViewerSizeDelegateProviderLegacy] which maintains
+  /// relative positioning and boundary clamping.
+  ///
+  /// To get the actual delegate set, use [getSizeDelegateProvider].
+  final PdfViewerSizeDelegateProvider? sizeDelegateProvider;
+
+  /// Provider to create a delegate that generates zoom stops (snap points).
+  final PdfViewerZoomStepsDelegateProvider zoomStepsDelegateProvider;
+
   /// A convenience function to get platform-specific default scroll physics.
   ///
   /// On iOS/MacOS this is [BouncingScrollPhysics], and on Android this is [FixedOverscrollPhysics], a
@@ -732,6 +781,29 @@ class PdfViewerParams {
     }
   }
 
+  /// Get the size delegate provider.
+  ///
+  /// If [sizeDelegateProvider] is non-null, it is returned; otherwise, a
+  /// [PdfViewerSizeDelegateProviderLegacy] is created with the deprecated parameters.
+  PdfViewerSizeDelegateProvider getSizeDelegateProvider() {
+    final sizeDelegateProvider = this.sizeDelegateProvider;
+    if (sizeDelegateProvider != null) {
+      return sizeDelegateProvider;
+    }
+    return PdfViewerSizeDelegateProviderLegacy(
+      // ignore: deprecated_member_use_from_same_package
+      maxScale: maxScale,
+      // ignore: deprecated_member_use_from_same_package
+      minScale: minScale,
+      // ignore: deprecated_member_use_from_same_package
+      onePassRenderingScaleThreshold: onePassRenderingScaleThreshold,
+      // ignore: deprecated_member_use_from_same_package
+      useAlternativeFitScaleAsMinScale: useAlternativeFitScaleAsMinScale,
+      // ignore: deprecated_member_use_from_same_package
+      calculateInitialZoom: calculateInitialZoom,
+    );
+  }
+
   /// Determine whether the viewer needs to be reloaded or not.
   ///
   bool doChangesRequireReload(PdfViewerParams? other) {
@@ -740,18 +812,25 @@ class PdfViewerParams {
         other.margin != margin ||
         other.backgroundColor != backgroundColor ||
         other.fitMode != fitMode ||
+        other.pageTransition != pageTransition ||
+        // ignore: deprecated_member_use_from_same_package
         other.maxScale != maxScale ||
+        // ignore: deprecated_member_use_from_same_package
         other.minScale != minScale ||
+        // ignore: deprecated_member_use_from_same_package
         other.useAlternativeFitScaleAsMinScale != useAlternativeFitScaleAsMinScale ||
         other.panAxis != panAxis ||
         other.boundaryMargin != boundaryMargin ||
         other.annotationRenderingMode != annotationRenderingMode ||
         other.limitRenderingCache != limitRenderingCache ||
         other.pageAnchor != pageAnchor ||
+        other.underflowAnchor != underflowAnchor ||
         other.pageAnchorEnd != pageAnchorEnd ||
+        // ignore: deprecated_member_use_from_same_package
         other.onePassRenderingScaleThreshold != onePassRenderingScaleThreshold ||
         other.onePassRenderingSizeThreshold != onePassRenderingSizeThreshold ||
         other.textSelectionParams != textSelectionParams ||
+        other.forceEnableTextSemantics != forceEnableTextSemantics ||
         other.matchTextColor != matchTextColor ||
         other.activeMatchTextColor != activeMatchTextColor ||
         other.pageDropShadow != pageDropShadow ||
@@ -759,13 +838,23 @@ class PdfViewerParams {
         other.scaleEnabled != scaleEnabled ||
         other.interactionEndFrictionCoefficient != interactionEndFrictionCoefficient ||
         other.scrollByMouseWheel != scrollByMouseWheel ||
+        other.scaleByPointerScale != scaleByPointerScale ||
         other.scrollHorizontallyByMouseWheel != scrollHorizontallyByMouseWheel ||
         other.enableKeyboardNavigation != enableKeyboardNavigation ||
         other.scrollByArrowKey != scrollByArrowKey ||
         other.horizontalCacheExtent != horizontalCacheExtent ||
         other.verticalCacheExtent != verticalCacheExtent ||
         other.linkHandlerParams != linkHandlerParams ||
-        other.scrollPhysics != scrollPhysics;
+        other.onAnnotationsChanged != onAnnotationsChanged ||
+        other.highlighterOpacity != highlighterOpacity ||
+        other.stampCategories != stampCategories ||
+        other.stampImageBuilder != stampImageBuilder ||
+        other.selectedStampInterfaceColor != selectedStampInterfaceColor ||
+        other.selectedStampPadding != selectedStampPadding ||
+        other.scrollPhysics != scrollPhysics ||
+        other.interactionDelegateProvider != interactionDelegateProvider ||
+        other.sizeDelegateProvider != sizeDelegateProvider ||
+        other.zoomStepsDelegateProvider != zoomStepsDelegateProvider;
   }
 
   @override
@@ -775,18 +864,25 @@ class PdfViewerParams {
     return other.margin == margin &&
         other.backgroundColor == backgroundColor &&
         other.fitMode == fitMode &&
+        other.pageTransition == pageTransition &&
+        // ignore: deprecated_member_use_from_same_package
         other.maxScale == maxScale &&
+        // ignore: deprecated_member_use_from_same_package
         other.minScale == minScale &&
+        // ignore: deprecated_member_use_from_same_package
         other.useAlternativeFitScaleAsMinScale == useAlternativeFitScaleAsMinScale &&
         other.panAxis == panAxis &&
         other.boundaryMargin == boundaryMargin &&
         other.annotationRenderingMode == annotationRenderingMode &&
         other.limitRenderingCache == limitRenderingCache &&
         other.pageAnchor == pageAnchor &&
+        other.underflowAnchor == underflowAnchor &&
         other.pageAnchorEnd == pageAnchorEnd &&
+        // ignore: deprecated_member_use_from_same_package
         other.onePassRenderingScaleThreshold == onePassRenderingScaleThreshold &&
         other.onePassRenderingSizeThreshold == onePassRenderingSizeThreshold &&
         other.textSelectionParams == textSelectionParams &&
+        other.forceEnableTextSemantics == forceEnableTextSemantics &&
         other.matchTextColor == matchTextColor &&
         other.activeMatchTextColor == activeMatchTextColor &&
         other.pageDropShadow == pageDropShadow &&
@@ -801,6 +897,7 @@ class PdfViewerParams {
         other.onDocumentChanged == onDocumentChanged &&
         other.onDocumentLoadFinished == onDocumentLoadFinished &&
         other.calculateInitialPageNumber == calculateInitialPageNumber &&
+        // ignore: deprecated_member_use_from_same_package
         other.calculateInitialZoom == calculateInitialZoom &&
         other.calculateCurrentPageNumber == calculateCurrentPageNumber &&
         other.onViewerReady == onViewerReady &&
@@ -808,6 +905,7 @@ class PdfViewerParams {
         other.onPageChanged == onPageChanged &&
         other.getPageRenderingScale == getPageRenderingScale &&
         other.scrollByMouseWheel == scrollByMouseWheel &&
+        other.scaleByPointerScale == scaleByPointerScale &&
         other.scrollHorizontallyByMouseWheel == scrollHorizontallyByMouseWheel &&
         other.enableKeyboardNavigation == enableKeyboardNavigation &&
         other.scrollByArrowKey == scrollByArrowKey &&
@@ -828,12 +926,16 @@ class PdfViewerParams {
         other.keyHandlerParams == keyHandlerParams &&
         other.behaviorControlParams == behaviorControlParams &&
         other.forceReload == forceReload &&
+        other.onAnnotationsChanged == onAnnotationsChanged &&
         other.highlighterOpacity == highlighterOpacity &&
         other.stampCategories == stampCategories &&
         other.stampImageBuilder == stampImageBuilder &&
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.selectedStampPadding == selectedStampPadding &&
-        other.scrollPhysics == scrollPhysics;
+        other.scrollPhysics == scrollPhysics &&
+        other.interactionDelegateProvider == interactionDelegateProvider &&
+        other.sizeDelegateProvider == sizeDelegateProvider &&
+        other.zoomStepsDelegateProvider == zoomStepsDelegateProvider;
   }
 
   @override
@@ -841,18 +943,25 @@ class PdfViewerParams {
     return margin.hashCode ^
         backgroundColor.hashCode ^
         fitMode.hashCode ^
+        pageTransition.hashCode ^
+        // ignore: deprecated_member_use_from_same_package
         maxScale.hashCode ^
+        // ignore: deprecated_member_use_from_same_package
         minScale.hashCode ^
+        // ignore: deprecated_member_use_from_same_package
         useAlternativeFitScaleAsMinScale.hashCode ^
         panAxis.hashCode ^
         boundaryMargin.hashCode ^
         annotationRenderingMode.hashCode ^
         limitRenderingCache.hashCode ^
         pageAnchor.hashCode ^
+        underflowAnchor.hashCode ^
         pageAnchorEnd.hashCode ^
+        // ignore: deprecated_member_use_from_same_package
         onePassRenderingScaleThreshold.hashCode ^
         onePassRenderingSizeThreshold.hashCode ^
         textSelectionParams.hashCode ^
+        forceEnableTextSemantics.hashCode ^
         matchTextColor.hashCode ^
         activeMatchTextColor.hashCode ^
         pageDropShadow.hashCode ^
@@ -867,6 +976,7 @@ class PdfViewerParams {
         onDocumentChanged.hashCode ^
         onDocumentLoadFinished.hashCode ^
         calculateInitialPageNumber.hashCode ^
+        // ignore: deprecated_member_use_from_same_package
         calculateInitialZoom.hashCode ^
         calculateCurrentPageNumber.hashCode ^
         onViewerReady.hashCode ^
@@ -874,6 +984,7 @@ class PdfViewerParams {
         onPageChanged.hashCode ^
         getPageRenderingScale.hashCode ^
         scrollByMouseWheel.hashCode ^
+        scaleByPointerScale.hashCode ^
         scrollHorizontallyByMouseWheel.hashCode ^
         enableKeyboardNavigation.hashCode ^
         scrollByArrowKey.hashCode ^
@@ -894,12 +1005,16 @@ class PdfViewerParams {
         keyHandlerParams.hashCode ^
         behaviorControlParams.hashCode ^
         forceReload.hashCode ^
+        onAnnotationsChanged.hashCode ^
         highlighterOpacity.hashCode ^
         stampCategories.hashCode ^
         stampImageBuilder.hashCode ^
         selectedStampInterfaceColor.hashCode ^
         selectedStampPadding.hashCode ^
-        scrollPhysics.hashCode;
+        scrollPhysics.hashCode ^
+        interactionDelegateProvider.hashCode ^
+        sizeDelegateProvider.hashCode ^
+        zoomStepsDelegateProvider.hashCode;
   }
 }
 
@@ -966,7 +1081,6 @@ class PdfTextSelectionParams {
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     return other is PdfTextSelectionParams &&
-        other.enabled == enabled &&
         other.buildSelectionHandle == buildSelectionHandle &&
         other.calcSelectionHandleOffset == calcSelectionHandleOffset &&
         other.onTextSelectionChange == onTextSelectionChange &&
@@ -980,7 +1094,6 @@ class PdfTextSelectionParams {
 
   @override
   int get hashCode =>
-      enabled.hashCode ^
       buildSelectionHandle.hashCode ^
       calcSelectionHandleOffset.hashCode ^
       onTextSelectionChange.hashCode ^
@@ -991,6 +1104,10 @@ class PdfTextSelectionParams {
       showContextMenuAutomatically.hashCode ^
       magnifier.hashCode;
 }
+
+/// Called once when annotation mode is exited; receives the current
+/// ink annotations serialized as Instant JSON.
+typedef PdfAnnotationsChangedCallback = Future<void> Function(String json);
 
 /// Function to build the text selection context menu.
 ///
@@ -1553,24 +1670,10 @@ typedef PdfViewerGetPageRenderingScale =
 
 /// Function to customize the layout of the pages.
 ///
-/// **Parameters:**
-/// - [pages] - List of pages from the PDF document
-/// - [params] - Viewer parameters
-/// - [helper] - Layout helper with viewport and margin information
-///
-/// **Example:**
-/// ```dart
-/// layoutPages: (pages, params, helper) {
-///   // Use helper for viewport-aware layouts
-///   return SequentialPagesLayout.fromPages(pages, params, helper: helper);
-/// }
-/// ```
-///
-/// If you have custom layout functions, add `helper` parameter:
-/// - Old: `(pages, params) => ...`
-/// - New: `(pages, params, helper) => ...`
-///
-/// The helper provides viewport size and margins for dynamic layouts.
+/// - [pages] is the list of pages.
+///   This is just a copy of the first loaded page of the document.
+/// - [params] is the viewer parameters.
+/// - [helper] is a [PdfLayoutHelper] that provides utility functions for layout computation.
 typedef PdfPageLayoutFunction =
     PdfPageLayout Function(List<PdfPage> pages, PdfViewerParams params, PdfLayoutHelper helper);
 
@@ -1655,20 +1758,6 @@ typedef PdfViewerErrorBannerBuilder =
 ///
 /// [size] is the size of the link.
 typedef PdfLinkWidgetBuilder = Widget? Function(BuildContext context, PdfLink link, Size size);
-
-/// Called when the user exits annotation drawing mode (via
-/// `PdfViewerController.exitAnnotationMode`).
-///
-/// Receives the current set of ink annotations serialized as an
-/// Instant JSON document (see https://www.nutrient.io/guides/web/json/).
-/// The viewer awaits this future before fully exiting mode, so I/O
-/// performed here is guaranteed to flush even if the user immediately
-/// backgrounds the app.
-///
-/// Annotations are document-blind: implementers must associate the
-/// JSON with the correct document themselves (using `PdfDocument.sourceName`,
-/// a file path, etc.).
-typedef PdfAnnotationsChangedCallback = Future<void> Function(String json);
 
 /// Function to paint things on page.
 ///

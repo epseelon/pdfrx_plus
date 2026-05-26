@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
-import 'package:pdfium_dart/pdfium_dart.dart' as pdfium_dart;
 
 import 'pdfrx.dart';
 import 'pdfrx_entry_functions.dart';
@@ -12,10 +11,10 @@ bool _isInitialized = false;
 ///
 /// This function sets up the following:
 ///
-/// - [Pdfrx.getCacheDirectory] is set to return the system temporary directory.
+/// - [Pdfrx.cacheDirectoryPath] is set to the pdfrx cache directory.
 /// - [Pdfrx.pdfiumModulePath] is configured to point to the pdfium module.
 ///   - The function checks for the `PDFIUM_PATH` environment variable to find an existing pdfium module.
-///   - If Pdfium module is not found, it will be downloaded from the internet.
+///   - If Pdfium module is not found, PDFium is loaded from pdfium_dart's native asset.
 /// - [Pdfrx.loadAsset] is set to throw an error by default (Dart does not support assets like Flutter does).
 /// - Calls [PdfrxEntryFunctions.init] to initialize the PDFium library.
 ///
@@ -28,21 +27,11 @@ Future<void> pdfrxInitialize({String? tmpPath, String? pdfiumRelease}) async {
   };
 
   final tmpDir = tmpPath != null ? Directory(tmpPath) : _getPdfrxCacheDirectory();
-  Pdfrx.getCacheDirectory ??= () => tmpDir.path;
+  Pdfrx.cacheDirectoryPath ??= tmpDir.path;
 
   final pdfiumPath = Platform.environment['PDFIUM_PATH'];
   if (pdfiumPath != null && await File(pdfiumPath).exists()) {
     Pdfrx.pdfiumModulePath ??= pdfiumPath;
-    await PdfrxEntryFunctions.instance.init();
-    _isInitialized = true;
-    return;
-  } else {
-    final moduleDir = Directory(tmpDir.path);
-    await moduleDir.create(recursive: true);
-    Pdfrx.pdfiumModulePath = await pdfium_dart.PDFiumDownloader.downloadAndGetPDFiumModulePath(
-      moduleDir.path,
-      pdfiumRelease: pdfiumRelease,
-    );
   }
 
   await PdfrxEntryFunctions.instance.init();

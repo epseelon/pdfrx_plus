@@ -3,7 +3,10 @@
 ## Environment Notes
 
 - This project uses a **pub workspace**. Running `dart pub get` in any directory fetches dependencies for all packages.
+- Published package pubspecs currently require Dart 3.10+ and Flutter 3.41+ where Flutter is used; workspace/example pubspecs may allow older SDKs for local tooling.
+- `pdfium_dart` uses Dart native assets and requires recent Dart/Flutter tooling.
 - Prefer `rg`/`rg --files` for search and discovery tasks; they are significantly faster than alternatives.
+- When running commands as an agent, prefer an explicit command `workdir`. The `cd ...` examples below are for humans running commands manually.
 
 ## Windows-Specific Notes (Claude Code)
 
@@ -65,7 +68,7 @@ cd packages/pdfrx
 flutter pub get
 flutter analyze
 flutter test
-flutter format .
+dart format .
 ```
 
 ### Core Engine (packages/pdfrx_engine)
@@ -109,7 +112,7 @@ The `ffigen` process requires LLVM/Clang:
 ```bash
 # For pdfium_dart package
 cd packages/pdfium_dart
-dart test  # Downloads PDFium headers automatically
+dart test  # Downloads PDFium headers into test/.tmp and runs build hooks
 dart run ffigen
 
 # For pdfrx_engine (if needed)
@@ -118,13 +121,13 @@ dart test
 dart run ffigen
 ```
 
-### On-Demand PDFium Downloads
+### PDFium Native Assets
 
-The `pdfium_dart` package provides a `getPdfium()` function that downloads PDFium binaries on demand. Useful for testing or CLI applications.
+The `pdfium_dart` package downloads PDFium during the Dart/Flutter build hook and exposes it as a native asset. `getPdfium()` first honors an explicit `modulePath`, uses Flutter-packaged PDFium when appropriate (for example the iOS/macOS XCFramework and Linux shared library directory), and falls back to the bundled native asset. `pdfrxInitialize()` also honors `PDFIUM_PATH`.
 
 ## Testing
 
-Tests download PDFium binaries automatically for supported platforms.
+Tests run build hooks automatically for supported platforms.
 
 ```bash
 # Test pdfrx_engine

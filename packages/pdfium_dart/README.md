@@ -13,8 +13,9 @@ This package contains auto-generated FFI bindings for PDFium using [ffigen](http
 - Pure Dart package with no Flutter dependencies
 - Auto-generated FFI bindings using [ffigen](https://pub.dev/packages/ffigen)
 - Provides direct access to PDFium's C API
-- Includes [getPdfium()](https://pub.dev/documentation/pdfium_dart/latest/pdfium_dart/getPdfium.html) function for on-demand PDFium binary downloads
-- Supports Windows (x64), Linux (x64, ARM64), and macOS (x64, ARM64)
+- Downloads and bundles PDFium at build time using Dart native assets
+- Includes [getPdfium()](https://pub.dev/documentation/pdfium_dart/latest/pdfium_dart/getPdfium.html) for resolving PDFium across Dart and Flutter runtimes
+- Supports Windows, Linux, Android, and macOS build hooks
 
 ## Usage
 
@@ -30,29 +31,33 @@ import 'dart:ffi';
 final pdfium = PDFium(DynamicLibrary.open('/path/to/libpdfium.so'));
 ```
 
-### On-Demand PDFium Downloads
+### PDFium Loading
 
-The [getPdfium](https://pub.dev/documentation/pdfium_dart/latest/pdfium_dart/getPdfium.html) function automatically downloads PDFium binaries on demand, making it easy to use PDFium in CLI applications or for testing without bundling binaries:
+The [getPdfium](https://pub.dev/documentation/pdfium_dart/latest/pdfium_dart/getPdfium.html) function resolves the PDFium library for the current runtime. You can also pass an explicit module path for custom deployments or tests:
 
 ```dart
 import 'package:pdfium_dart/pdfium_dart.dart';
 
 void main() async {
-  // Downloads PDFium binaries automatically if not cached
-  final pdfium = await getPdfium();
+  // Resolves PDFium for the current Dart or Flutter runtime.
+  final pdfium = getPdfium();
+
+  // Or load a specific shared library.
+  final customPdfium = getPdfium(modulePath: '/path/to/libpdfium.so');
 
   // Use PDFium API
   // ...
 }
 ```
 
-**Note for macOS:** The downloaded library is not codesigned. If you encounter issues loading the library, you may need to manually codesign it:
+The build hook downloads binaries from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and exposes them through Dart native assets. At runtime, `getPdfium()` chooses the appropriate loading strategy:
 
-```bash
-codesign --force --sign - <path_to_libpdfium.dylib>
-```
-
-The binaries are downloaded from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and cached in the system temp directory.
+- `modulePath` is used first when explicitly provided.
+- Flutter apps on iOS/macOS use the PDFium XCFramework that is already linked into the app by `pdfium_flutter`.
+- Native PDFium assets are not built for iOS; Flutter iOS apps should depend on `pdfium_flutter` so the XCFramework is linked by the Flutter plugin.
+- Pure Dart commands on macOS, such as `dart test`, `dart run`, and `dart compile`, use the `libpdfium.dylib` native asset.
+- Flutter apps on Linux look for `libpdfium.so` in the shared library directory relative to the resolved executable.
+- Other supported platforms first try the platform library name, then fall back to the bundled native asset recorded in `.dart_tool/native_assets.yaml`.
 
 ## Generating Bindings
 
@@ -82,7 +87,7 @@ The [ffigen](https://pub.dev/packages/ffigen) process requires LLVM/Clang to be 
 
 To regenerate the FFI bindings:
 
-1. Run tests to download PDFium headers:
+1. Run tests once to download PDFium headers into `test/.tmp`:
 
    ```bash
    dart test
@@ -100,8 +105,9 @@ The bindings are generated from PDFium headers using the configuration in `ffige
 
 | Platform | Architecture | Support |
 |----------|-------------|---------|
-| Windows  | x64         | ✅      |
-| Linux    | x64, ARM64  | ✅      |
+| Windows  | x64, ARM64, x86 | ✅  |
+| Linux    | x64, ARM64, ARM, x86 | ✅ |
+| Android  | ARM64, ARMv7, x86, x86_64 | ✅ |
 | macOS    | x64, ARM64  | ✅      |
 
-**Note:** For Flutter applications with bundled PDFium binaries, use the [pdfium_flutter](https://pub.dev/packages/pdfium_flutter) package instead.
+**Note:** For Flutter applications, use [pdfium_flutter](https://pub.dev/packages/pdfium_flutter) unless you specifically need the lower-level Dart bindings directly. `pdfium_flutter` includes the Flutter deployment layer for all native platforms except Web.

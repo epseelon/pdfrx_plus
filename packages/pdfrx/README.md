@@ -60,7 +60,7 @@ Add this to your package's `pubspec.yaml` file and execute `flutter pub get`:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.2.20
+  pdfrx: ^2.4.1
 ```
 
 **Note:** You only need to add `pdfrx` to your dependencies. The `pdfrx_engine` package is automatically included as a dependency of `pdfrx`.
@@ -83,6 +83,14 @@ Future<void> main() {
 For more information, see [pdfrx Initialization](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md)
 
 Tip: To silence debug-time WASM warnings, call `pdfrxFlutterInitialize(dismissPdfiumWasmWarnings: true)` during startup.
+
+### Native PDFium Packaging
+
+Native Flutter builds use `pdfium_flutter` and `pdfium_dart` to provide PDFium:
+
+- Android, Linux, and Windows bundle PDFium through Dart native assets.
+- iOS and macOS link the PDFium XCFramework through CocoaPods or Swift Package Manager.
+- The native-assets link hooks avoid bundling an extra `libpdfium.dylib` from `pdfium_dart` on iOS/macOS Flutter apps.
 
 ### Note for Windows
 
@@ -119,7 +127,7 @@ dart run pdfrx:remove_wasm_modules --revert
 
 ## Note for iOS/macOS: Using CoreGraphics Instead of PDFium
 
-For iOS and macOS apps, you can optionally use [pdfrx_coregraphics](https://pub.dev/packages/pdfrx_coregraphics) to render PDFs with Apple's native CoreGraphics/PDFKit instead of the bundled PDFium library. This can significantly reduce your app size by removing PDFium dependencies on Darwin platforms.
+For iOS and macOS apps, you can optionally use [pdfrx_coregraphics](https://pub.dev/packages/pdfrx_coregraphics) to render PDFs with Apple's native CoreGraphics/PDFKit instead of the PDFium XCFramework. This can significantly reduce your app size by removing PDFium dependencies on Darwin platforms.
 
 **⚠️ Note: `pdfrx_coregraphics` is experimental and has some limitations. See the [package documentation](https://pub.dev/packages/pdfrx_coregraphics#limitations) for details.**
 
@@ -155,6 +163,8 @@ PdfViewer.asset(
 ```
 
 The `scrollPhysics` and `scrollPhysicsScale` hooks let you plug in your own [ScrollPhysics](https://api.flutter.dev/flutter/widgets/ScrollPhysics-class.html) (or the bundled [FixedOverscrollPhysics](https://pub.dev/documentation/pdfrx/latest/pdfrx/FixedOverscrollPhysics-class.html)) to tune drag and zoom behavior per platform.
+
+For page alignment, [PdfViewerParams.underflowAnchor](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/underflowAnchor.html) controls where the document is placed when it is smaller than the viewport.
 
 ## Deal with Password Protected PDF Files
 
@@ -209,6 +219,7 @@ For more text selection customization, see [Text Selection](https://github.com/e
 - [Dark/Night Mode Support](https://github.com/espresso3389/pdfrx/blob/master/doc/Dark-Night-Mode-Support.md)
 - [Document Loading Indicator](https://github.com/espresso3389/pdfrx/blob/master/doc/Document-Loading-Indicator.md)
 - [Viewer Customization using Widget Overlay](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/viewerOverlayBuilder.html)
+- [PdfOverlayInteractionRegion](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfOverlayInteractionRegion-class.html) for tap-like overlay interactions that do not block viewer gestures
 - [Custom Scroll Physics for Drag/Zoom](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/scrollPhysics.html)
 
 ### Additional Customizations

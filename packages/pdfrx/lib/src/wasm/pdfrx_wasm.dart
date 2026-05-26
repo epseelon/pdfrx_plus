@@ -354,16 +354,30 @@ class PdfrxEntryFunctionsWasmImpl extends PdfrxEntryFunctions {
   }
 
   @override
+  Future<void> configureFontEnvironment({String? fontCachePath, List<String> fontPaths = const []}) async {
+    await init();
+  }
+
+  @override
   Future<void> reloadFonts() async {
     await init();
     await _sendCommand('reloadFonts', parameters: {'dummy': true});
   }
 
   @override
-  Future<void> addFontData({required String face, required Uint8List data}) async {
+  Future<void> addFontData({required String face, required Uint8List data, String? resolvedFace}) async {
     await init();
     final jsData = data.buffer.toJS;
-    await _sendCommand('addFontData', parameters: {'face': face, 'data': jsData}, transfer: [jsData].toJS);
+    await _sendCommand(
+      'addFontData',
+      parameters: {'face': face, 'data': jsData, 'resolvedFace': ?resolvedFace},
+      transfer: [jsData].toJS,
+    );
+  }
+
+  @override
+  Future<void> addFontFile({required String face, required String filePath, String? resolvedFace}) async {
+    // Browser workers cannot synchronously read arbitrary local files.
   }
 
   @override
