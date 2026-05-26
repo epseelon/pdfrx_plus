@@ -1,7 +1,7 @@
 <goal>
-Bring this fork of `pdfrx` up to date with upstream `espresso3389/pdfrx` at the **`pdfrx-v2.4.2`** tag (or, if that tag does not exist, the latest available `pdfrx-v2.4.x` tag) — and whatever versions of `pdfrx_engine`, `pdfium_flutter`, and `pdfium_dart` are present at that commit — **without regressing** the annotation customizations the fork has accumulated on top of 2.2.24 (pen, highlighter, eraser, stamp manipulation, hand navigation tool, Instant JSON import/export, undo/redo, ownership model).
+Bring this fork of `pdfrx` up to date with upstream `espresso3389/pdfrx` at the **`pdfrx-v2.4.1`** tag (resolved 2026-05-26: no `pdfrx-v2.4.2` tag exists in upstream — `pdfrx-v2.4.1` is the highest available `pdfrx-v2.4.x` tag, commit `654fc94`) — and whatever versions of `pdfrx_engine`, `pdfium_flutter`, and `pdfium_dart` are present at that commit — **without regressing** the annotation customizations the fork has accumulated on top of 2.2.24 (pen, highlighter, eraser, stamp manipulation, hand navigation tool, Instant JSON import/export, undo/redo, ownership model).
 
-Upstream uses **per-package tag names** (`pdfrx-vX.Y.Z`, `pdfrx_engine-vX.Y.Z`, `pdfium_flutter-vX.Y.Z`, `pdfium_dart-vX.Y.Z`); there is no single tag that captures "all packages at the 2.4.2 release simultaneously." Treat the `pdfrx-v2.4.2` (or fallback) commit as the authoritative merge target; the other packages' versions at that commit are whatever they are.
+Upstream uses **per-package tag names** (`pdfrx-vX.Y.Z`, `pdfrx_engine-vX.Y.Z`, `pdfium_flutter-vX.Y.Z`, `pdfium_dart-vX.Y.Z`); there is no single tag that captures "all packages at the 2.4.x release simultaneously." Treat the `pdfrx-v2.4.1` commit as the authoritative merge target; the other packages' versions at that commit are whatever they are.
 
 The fork (`epseelon/pdfrx_plus`) has diverged from upstream over multiple phases of annotation work. We need the latest upstream bug fixes and features (pluggable scroll/zoom architecture, pluggable sizing/layout, native-assets PDFium packaging, `PdfOverlayInteractionRegion`, `underflowAnchor`, text selection fixes) without disturbing the annotation API surface or behavior exported from `packages/pdfrx/lib/pdfrx.dart`.
 
@@ -19,10 +19,10 @@ Outcome: the fork continues to expose the same annotation public API and behavio
 - `pdfrx_coregraphics` 0.1.16 — `@packages/pdfrx_coregraphics/pubspec.yaml` (declares `pdfrx_engine: ^0.3.9`)
 
 **Target versions:**
-- `pdfrx`: whatever the merge target tag (expected `pdfrx-v2.4.2`) declares — 2.4.2 expected
+- `pdfrx`: whatever the merge target tag declares — `pdfrx-v2.4.1` resolves to commit `654fc94` "Prepare pdfrx 2.4.1 release"; expect `2.4.1` (no `pdfrx-v2.4.2` exists in upstream)
 - `pdfrx_engine`, `pdfium_flutter`, `pdfium_dart`: whatever versions are present at the chosen `pdfrx` tag commit (expected `pdfrx_engine 0.4.x`, `pdfium_flutter 0.2.x`, `pdfium_dart 0.2.x` per upstream changelog research, but verify against the actual merged pubspecs)
 
-**Upstream:** `https://github.com/espresso3389/pdfrx` (no remote currently configured; only `origin` → `epseelon/pdfrx_plus`). Upstream tags are per-package: `pdfrx-vX.Y.Z`, `pdfrx_engine-vX.Y.Z`, `pdfium_flutter-vX.Y.Z`, `pdfium_dart-vX.Y.Z`. There is no single tag for "the 2.4.2 release of everything"; merge target is the `pdfrx-v2.4.2` commit, accepting whatever state the other packages are in at that commit.
+**Upstream:** `https://github.com/espresso3389/pdfrx` (resolved 2026-05-26: now configured as remote `upstream`). Upstream tags are per-package: `pdfrx-vX.Y.Z`, `pdfrx_engine-vX.Y.Z`, `pdfium_flutter-vX.Y.Z`, `pdfium_dart-vX.Y.Z`. There is no single tag for "the 2.4.x release of everything"; merge target is the `pdfrx-v2.4.1` commit (`pdfrx-v2.4.2` never tagged), accepting whatever state the other packages are in at that commit.
 
 **This is a private fork.** The fork retains upstream `homepage`/`repository`/`issue_tracker` pubspec metadata pointing to `espresso3389/pdfrx`; it is not published to pub.dev under a different name. CHANGELOG and version bumps in this work are upgrade plumbing, not a release event.
 
