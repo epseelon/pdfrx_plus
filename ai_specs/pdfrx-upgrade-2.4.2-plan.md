@@ -118,9 +118,28 @@ Merge `upstream/pdfrx-v2.4.1` into fork (no `2.4.2` exists). Preserve annotation
 ### Phase 6: Commit, PR, follow-ups
 
 - **Goal**: PR open with full context
-- [ ] If diff is unreviewably large, split into stacked PRs along package boundaries (engine + pdfium_* first, pdfrx + examples second) — decide after seeing diff
-- [ ] PR description: upstream changes pulled in, conflict resolution decisions, deferred follow-ups (`PdfOverlayInteractionRegion` adoption, `sizeDelegateProvider` migration, `PdfFontManager` opt-in, `scaleEnabled` Ctrl+wheel audit), platforms manually verified vs unverified
-- [ ] Verify: PR open; CI green or known-failures documented in PR
+- [ ] If diff is unreviewably large, split into stacked PRs along package boundaries — **Decision needed by user**: this is a large merge (one massive merge commit with ~250 file changes); user may want to keep as a single PR for atomic review, or split if needed. Recommend single PR with the detailed conflict survey already in the merge commit message.
+- [ ] PR description: upstream changes pulled in, conflict resolution decisions, deferred follow-ups, platforms manually verified vs unverified — **Not opened**: workflow invocation did not specify `--create-pr`. Branch is locally committed (`feature/pdfrx-upgrade`, 5 new commits ahead of master). User can push & create PR manually, or re-run `act-workflow-work … full --create-pr`.
+- [x] Verify: PR open; CI green or known-failures documented in PR — **N/A** for this run (no PR created). Final local validation: `flutter analyze` clean (5 info-only warnings, no errors); 129+52+11+3 tests pass; 7 upstream viewer tests fail (documented as follow-ups below).
+
+**Documented follow-ups (for the eventual PR description):**
+
+1. `PdfOverlayInteractionRegion` adoption for annotation pointer routing (currently using fork's outer `Listener` approach)
+2. `sizeDelegateProvider` migration: production code still uses fork's `widget.params.maxScale ?? 8.0` direct reads instead of going through `getSizeDelegateProvider().create()`. The Legacy delegate is in place but unused; integration deferred.
+3. `PdfFontManager` opt-in (only example/viewer uses it; fork's main pipeline does not)
+4. `scaleEnabled: false` Ctrl+wheel audit: upstream changed this to also disable ctrl-wheel/pointer zoom (#603); fork's `_onWheelDelta` may not yet honor this — test `scale disabled ignores ctrl wheel zoom` fails.
+5. Trackpad-zoom (`onPointerScale`) wiring: fork's `interactive_viewer.dart` doesn't yet plumb `onPointerScale` callback; removed `_onPointerScale` reference from build method.
+6. WASM `preferRangeAccess` opt-in
+7. **Test failures to investigate (in `packages/pdfrx/test/pdf_viewer_test.dart`):**
+   - `PdfViewer.uri` — likely fetches a real URL and times out; needs `runAsync`/mock
+   - `top page anchor keeps underflowing page top aligned`
+   - `landscape page is centered in portrait viewport by default`
+   - `underflow anchor places a landscape page at the top of a portrait viewport`
+   - `scale disabled ignores ctrl wheel zoom` (matches follow-up #4)
+   - `default page anchor remains top`
+   - These all test upstream-added anchor/centering behavior that depends on the sizing-delegate architecture not yet fully integrated into fork's pdf_viewer.dart.
+8. Linux + Windows native builds (not verified — no toolchain on this macOS dev host)
+9. Manual smoke (pen/highlighter/eraser/stamp/hand) in music_viewer — requires interactive user testing
 
 ## Risks / Out of scope
 
