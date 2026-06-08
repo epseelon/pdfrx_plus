@@ -3795,12 +3795,15 @@ class _PdfViewerState extends State<PdfViewer>
   /// [point] is in the document coordinates.
   PdfTextSelectionPoint? _findTextAndIndexForPoint(Offset? point, {double hitTestMargin = 8}) {
     if (point == null) return null;
-    for (var pageIndex = 0; pageIndex < _document!.pages.length; pageIndex++) {
-      final pageRect = _layout!.pageLayouts[pageIndex];
+    final document = _document;
+    final layout = _layout;
+    if (document == null || layout == null) return null; // viewer tapped before the PDF finished loading
+    for (var pageIndex = 0; pageIndex < document.pages.length; pageIndex++) {
+      final pageRect = layout.pageLayouts[pageIndex];
       if (!pageRect.contains(point)) {
         continue;
       }
-      final page = _document!.pages[pageIndex];
+      final page = document.pages[pageIndex];
       final text = _getCachedTextOrDelayLoadText(pageIndex + 1, onTextLoaded: () => _updateTextSelection());
       if (text == null) continue;
       final pt = point.translate(-pageRect.left, -pageRect.top).toPdfPoint(page: page, scaledPageSize: pageRect.size);
