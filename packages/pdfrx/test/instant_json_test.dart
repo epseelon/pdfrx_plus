@@ -253,9 +253,10 @@ void main() {
           [30.0, 40.0],
         ],
       ]);
-      expect(lines['intensities'], [
-        [1.0, 1.0, 1.0],
-      ]);
+      // Payload shrink: `lines.intensities` is no longer emitted, and an id-less
+      // stroke omits the `id` key entirely.
+      expect(lines.containsKey('intensities'), isFalse);
+      expect(entry.containsKey('id'), isFalse);
     });
 
     test('encodes creatorName when present and omits the key when null', () {
@@ -519,6 +520,115 @@ void main() {
           expect(decoded[i].pointsInPdfSpace[j].dy, closeTo(original[i].pointsInPdfSpace[j].dy, 1e-6));
         }
       }
+    });
+  });
+
+  group('ink id + payload shrink (element split)', () {
+    PdfInkAnnotation ink({
+      String? id,
+      int pageIndex = 0,
+      List<Offset> points = const [Offset(0, 0), Offset(1, 1)],
+      PdfInkAnnotationKind kind = PdfInkAnnotationKind.pen,
+      double opacity = 1.0,
+    }) => PdfInkAnnotation(
+      id: id,
+      pageIndex: pageIndex,
+      pointsInPdfSpace: points,
+      lineWidth: 2.0,
+      strokeColor: const Color(0xFFFF3B30),
+      opacity: opacity,
+      createdAt: DateTime.utc(2024, 1, 1, 12),
+      updatedAt: DateTime.utc(2024, 1, 1, 12),
+      kind: kind,
+    );
+
+    Map<String, dynamic> encodeSingle(PdfInkAnnotation a) {
+      final decoded = jsonDecode(encodeInstantJson([a])) as Map<String, dynamic>;
+      return (decoded['annotations'] as List).single as Map<String, dynamic>;
+    }
+
+    List<PdfInkAnnotation> decode(String json) =>
+        decodeInstantJson(json, pageCount: 1, defaultColor: const Color(0xFFFF0000), defaultLineWidth: 2.0);
+
+    test('encode emits the id when present and omits the key when null', () {
+      expect(encodeSingle(ink(id: 'stroke-abc'))['id'], 'stroke-abc');
+      expect(encodeSingle(ink()).containsKey('id'), isFalse);
+    });
+
+    test('encode rounds ink coordinates to 2 decimals and drops lines.intensities', () {
+      final entry = encodeSingle(ink(points: const [Offset(1.239, 2.561), Offset(3.014, 4.986)]));
+      final lines = entry['lines'] as Map<String, dynamic>;
+      expect(lines.containsKey('intensities'), isFalse);
+      expect(lines['points'], [
+        [
+          [1.24, 2.56],
+          [3.01, 4.99],
+        ],
+      ]);
+      // bbox is derived from the rounded points and is itself 2-decimal.
+      expect(entry['bbox'], [1.24, 2.56, 1.77, 2.43]);
+    });
+
+    test('decode reads the id from a single-segment entry', () {
+      const json =
+          '{"annotations":[{"v":1,"type":"pspdfkit/ink","id":"stroke-xyz","pageIndex":0,'
+          '"lines":{"points":[[[0,0],[1,1]]]},"lineWidth":2,"strokeColor":"#FF3B30"}]}';
+      expect(decode(json).single.id, 'stroke-xyz');
+    });
+
+    test('decode assigns distinct per-segment ids to a multi-segment entry', () {
+      const json =
+          '{"annotations":[{"v":2,"type":"pspdfkit/ink","id":"multi","pageIndex":0,'
+          '"lines":{"points":[[[0,0],[1,1]],[[2,2],[3,3]],[[4,4],[5,5]]]},"lineWidth":2,"strokeColor":"#FF3B30"}]}';
+      expect(decode(json).map((s) => s.id).toList(), ['multi#0', 'multi#1', 'multi#2']);
+    });
+
+    test('decode leaves the id null when the entry has none', () {
+      const json =
+          '{"annotations":[{"v":1,"type":"pspdfkit/ink","pageIndex":0,'
+          '"lines":{"points":[[[0,0],[1,1]]]},"lineWidth":2,"strokeColor":"#FF3B30"}]}';
+      expect(decode(json).single.id, isNull);
+    });
+
+    test('decode falls back to the Unix epoch sentinel for missing timestamps (not now())', () {
+      const json =
+          '{"annotations":[{"v":1,"type":"pspdfkit/ink","pageIndex":0,'
+          '"lines":{"points":[[[0,0],[1,1]]]},"lineWidth":2,"strokeColor":"#FF3B30"}]}';
+      final stroke = decode(json).single;
+      final epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      expect(stroke.createdAt, epoch);
+      expect(stroke.updatedAt, epoch);
+    });
+
+    test('decode tolerates a fork-authored payload with no lines.intensities', () {
+      final json = encodeInstantJson([
+        ink(points: const [Offset(2, 3), Offset(4, 5)]),
+      ]);
+      expect(json.contains('intensities'), isFalse);
+      expect(decode(json).single.pointsInPdfSpace, const [Offset(2, 3), Offset(4, 5)]);
+    });
+
+    test('encode(decode(x)) == x for a fork-authored payload (id + kind + rounding)', () {
+      final x = encodeInstantJson([
+        ink(id: 'a1', points: const [Offset(1.239, 2.561), Offset(3.014, 4.986)]),
+        ink(
+          id: 'b2',
+          points: const [Offset(10.5, 20.25), Offset(30.75, 40.125)],
+          kind: PdfInkAnnotationKind.highlighter,
+          opacity: 0.35,
+        ),
+      ]);
+      expect(encodeInstantJson(decode(x)), x);
+    });
+
+    test('rounding is idempotent across two encode/decode cycles', () {
+      final x = encodeInstantJson([
+        ink(points: const [Offset(1.239, 2.561), Offset(3.014, 4.986)]),
+      ]);
+      final once = encodeInstantJson(decode(x));
+      final twice = encodeInstantJson(decode(once));
+      expect(once, x);
+      expect(twice, once);
     });
   });
 }

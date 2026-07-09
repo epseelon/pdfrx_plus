@@ -471,7 +471,12 @@ class PdfAnnotationController extends ChangeNotifier {
   /// points are discarded (cannot be painted). The stroke inherits
   /// [currentCreator] from the active mode session so ownership-aware
   /// operations can scope to it later. Notifies listeners.
-  void commitStroke() {
+  ///
+  /// The committed stroke is assigned a fresh 24-character hex [PdfInkAnnotation.id]
+  /// so downstream consumers can identify it stably across export/import.
+  /// [idGenerator] is a testability seam; it defaults to a random 24-hex
+  /// generator.
+  void commitStroke({String Function()? idGenerator}) {
     final inFlight = _inFlight;
     if (inFlight == null) return;
     _inFlight = null;
@@ -483,6 +488,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final now = DateTime.now().toUtc();
     _strokes.add(
       PdfInkAnnotation(
+        id: (idGenerator ?? _defaultIdGenerator)(),
         pageIndex: inFlight.pageIndex,
         pointsInPdfSpace: List<Offset>.unmodifiable(inFlight.points),
         lineWidth: inFlight.lineWidth,
@@ -651,6 +657,10 @@ class PdfAnnotationController extends ChangeNotifier {
         if (subPoints.length >= 2) {
           result.add(
             PdfInkAnnotation(
+              // Each surviving fragment is a new stroke and must get a FRESH
+              // id — copying the parent's id would collapse the fragments to
+              // one element in the downstream diff and silently lose strokes.
+              id: _defaultIdGenerator(),
               pageIndex: s.pageIndex,
               pointsInPdfSpace: List<Offset>.unmodifiable(subPoints),
               lineWidth: s.lineWidth,

@@ -42,9 +42,19 @@ class PdfInkAnnotation {
     required this.opacity,
     required this.createdAt,
     required this.updatedAt,
+    this.id,
     this.creatorName,
     this.kind = PdfInkAnnotationKind.pen,
   });
+
+  /// Stable identifier for this stroke, or `null` for an in-flight stroke
+  /// or a legacy stroke that predates ink IDs.
+  ///
+  /// Assigned a 24-character hex id when the stroke is committed
+  /// (`PdfAnnotationController.commitStroke`); each eraser-split fragment
+  /// receives a fresh id, never the parent's. Persisted through Instant
+  /// JSON's `id` field so identity survives an export/import round-trip.
+  final String? id;
 
   /// 0-based page index this stroke is anchored to.
   final int pageIndex;

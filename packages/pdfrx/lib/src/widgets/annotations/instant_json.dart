@@ -72,19 +72,23 @@ String encodeInstantJson(
 }
 
 Map<String, dynamic> _encodeInkEntry(PdfInkAnnotation a) {
-  final points = a.pointsInPdfSpace.map((p) => [p.dx, p.dy]).toList(growable: false);
-  final intensities = List<double>.filled(a.pointsInPdfSpace.length, 1.0);
+  // Payload shrink: coordinates are rounded to 2 decimals and `lines.intensities`
+  // is no longer emitted (the decoder never read it). The bbox is derived from
+  // the SAME rounded points so `encode(decode(x)) == x` for fork-authored
+  // payloads (a decode reads back the rounded points verbatim).
+  final points = a.pointsInPdfSpace.map((p) => Offset(_round2(p.dx), _round2(p.dy))).toList(growable: false);
+  final jsonPoints = points.map((p) => [p.dx, p.dy]).toList(growable: false);
   return {
     'v': 1,
     'type': _inkAnnotationType,
+    if (a.id != null) 'id': a.id,
     'pageIndex': a.pageIndex,
-    'bbox': _bbox(a.pointsInPdfSpace),
+    'bbox': _bbox(points),
     'opacity': a.opacity,
     'createdAt': _formatTimestamp(a.createdAt),
     'updatedAt': _formatTimestamp(a.updatedAt),
     'lines': {
-      'intensities': [intensities],
-      'points': [points],
+      'points': [jsonPoints],
     },
     'lineWidth': a.lineWidth,
     'isDrawnNaturally': false,
@@ -150,8 +154,15 @@ List<double> _bbox(List<Offset> points) {
     if (p.dy < minY) minY = p.dy;
     if (p.dy > maxY) maxY = p.dy;
   }
-  return [minX, minY, maxX - minX, maxY - minY];
+  // Round the derived width/height too so a bbox computed from rounded points
+  // stays a stable 2-decimal value (float subtraction can otherwise reintroduce
+  // long tails) and the payload round-trips idempotently.
+  return [_round2(minX), _round2(minY), _round2(maxX - minX), _round2(maxY - minY)];
 }
+
+/// Round a coordinate to 2 decimals for the payload shrink (requirement 5).
+/// Idempotent: `_round2(_round2(x)) == _round2(x)`.
+double _round2(double value) => (value * 100).round() / 100;
 
 String _formatTimestamp(DateTime t) => t.toUtc().toIso8601String();
 
@@ -294,11 +305,22 @@ List<PdfInkAnnotation> _decodeInkEntry(
   final rawOpacity = entry['opacity'];
   final opacity = rawOpacity is num ? rawOpacity.toDouble().clamp(0.0, 1.0) : 1.0;
 
-  final createdAt = _parseTimestamp(entry['createdAt']) ?? DateTime.now().toUtc();
+  // Missing timestamps fall back to a deterministic Unix-epoch sentinel, NOT
+  // `DateTime.now()`: a `now()` fallback would give a timestamp-less entry a
+  // fresh identity on every decode, causing permanent delete-and-recreate churn
+  // of its persisted element doc (requirement 4).
+  final createdAt = _parseTimestamp(entry['createdAt']) ?? _epochSentinel;
   final updatedAt = _parseTimestamp(entry['updatedAt']) ?? createdAt;
 
   final rawCreatorName = entry['creatorName'];
   final creatorName = rawCreatorName is String ? rawCreatorName : null;
+
+  // Stable identity: the entry's embedded `id` when present. A multi-segment
+  // entry expands to one stroke per segment, so each carries `'$id#$i'` to keep
+  // the fragments distinct; a single-segment entry keeps the id verbatim.
+  final rawId = entry['id'];
+  final entryId = rawId is String && rawId.isNotEmpty ? rawId : null;
+  final isMultiSegment = segments.length > 1;
 
   // Resolve kind: explicit `pdfrx:kind` field wins; missing/malformed/unknown
   // values silently fall back to opacity-based inference. This keeps legacy
@@ -317,7 +339,8 @@ List<PdfInkAnnotation> _decodeInkEntry(
   // preserved as-is — the renderer draws them as round-capped circles
   // of diameter `lineWidth` (pen and highlighter both use round caps).
   final out = <PdfInkAnnotation>[];
-  for (final segment in segments) {
+  for (var i = 0; i < segments.length; i++) {
+    final segment = segments[i];
     if (segment is! List || segment.isEmpty) continue;
     final points = <Offset>[];
     var malformed = false;
@@ -331,8 +354,10 @@ List<PdfInkAnnotation> _decodeInkEntry(
       points.add(Offset(x, y));
     }
     if (malformed || points.isEmpty) continue;
+    final strokeId = entryId == null ? null : (isMultiSegment ? '$entryId#$i' : entryId);
     out.add(
       PdfInkAnnotation(
+        id: strokeId,
         pageIndex: pageIndex,
         pointsInPdfSpace: points,
         lineWidth: lineWidth,
@@ -411,6 +436,10 @@ PdfStampAnnotation? _decodeStampEntry(
     creatorName: creatorName,
   );
 }
+
+/// Deterministic fallback timestamp (Unix epoch 0, UTC) for entries whose
+/// `createdAt`/`updatedAt` are missing or unparseable. See [_decodeInkEntry].
+final DateTime _epochSentinel = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
 DateTime? _parseTimestamp(dynamic value) {
   if (value is! String) return null;

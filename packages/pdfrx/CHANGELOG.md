@@ -1,3 +1,9 @@
+# 2.4.2
+
+- NEW: `PdfInkAnnotation.id`, a stable identifier assigned on commit (24-hex, with an optional `idGenerator` seam) and preserved through Instant JSON's `id` field. Eraser-split fragments each receive a fresh, distinct id.
+- CHANGED: Ink payload shrink. Encoded ink coordinates are rounded to 2 decimals and `lines.intensities` is no longer emitted; the decoder never read intensities, so both old and new payloads still decode.
+- CHANGED: A missing `createdAt`/`updatedAt` on an ink entry now decodes to a deterministic Unix-epoch sentinel instead of `DateTime.now()`, so timestamp-less entries keep a stable identity across sessions.
+
 # 2.4.1
 
 - DOCUMENTED: Added usage guidance for [PdfOverlayInteractionRegion](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfOverlayInteractionRegion-class.html) in overlay examples.
