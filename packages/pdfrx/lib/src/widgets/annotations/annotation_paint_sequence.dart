@@ -1,4 +1,5 @@
 import 'pdf_ink_annotation.dart';
+import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 
 /// Annotation kind, used as the third key of the unified paint order.
@@ -12,7 +13,7 @@ enum PdfAnnotationPaintKind {
   /// A freehand [PdfInkAnnotation] (pen or highlighter).
   ink,
 
-  /// A rectangle shape. Reserved for the rectangle tool.
+  /// A [PdfRectAnnotation] laid down by the rectangle tool.
   rect,
 
   /// A [PdfStampAnnotation].
@@ -59,6 +60,25 @@ final class PdfInkPaintEntry extends PdfAnnotationPaintEntry {
 
   @override
   String get sortId => stroke.id ?? '';
+}
+
+/// A laid rectangle's step in the sequence.
+final class PdfRectPaintEntry extends PdfAnnotationPaintEntry {
+  /// Wraps [rect], which sits at [indexInKind] of the controller's
+  /// rectangle list.
+  const PdfRectPaintEntry(this.rect, {required super.indexInKind});
+
+  /// The rectangle to paint.
+  final PdfRectAnnotation rect;
+
+  @override
+  PdfAnnotationPaintKind get kind => PdfAnnotationPaintKind.rect;
+
+  @override
+  DateTime get createdAt => rect.createdAt;
+
+  @override
+  String get sortId => rect.id;
 }
 
 /// A placed stamp's step in the sequence.
@@ -117,18 +137,24 @@ int comparePaintEntries(PdfAnnotationPaintEntry a, PdfAnnotationPaintEntry b) {
 /// Every committed annotation anchored to [pageIndex], as the one
 /// creation-ordered sequence the page painter walks, earliest first.
 ///
-/// [strokes] and [stamps] are the controller's own lists; an entry's
-/// position in them becomes its [PdfAnnotationPaintEntry.indexInKind],
-/// so the result is reproducible for identical inputs.
+/// [strokes], [rects] and [stamps] are the controller's own lists; an
+/// entry's position in them becomes its
+/// [PdfAnnotationPaintEntry.indexInKind], so the result is reproducible
+/// for identical inputs.
 List<PdfAnnotationPaintEntry> buildPageAnnotationPaintSequence({
   required int pageIndex,
   required List<PdfInkAnnotation> strokes,
   required List<PdfStampAnnotation> stamps,
+  List<PdfRectAnnotation> rects = const [],
 }) {
   final entries = <PdfAnnotationPaintEntry>[];
   for (var i = 0; i < strokes.length; i++) {
     if (strokes[i].pageIndex != pageIndex) continue;
     entries.add(PdfInkPaintEntry(strokes[i], indexInKind: i));
+  }
+  for (var i = 0; i < rects.length; i++) {
+    if (rects[i].pageIndex != pageIndex) continue;
+    entries.add(PdfRectPaintEntry(rects[i], indexInKind: i));
   }
   for (var i = 0; i < stamps.length; i++) {
     if (stamps[i].pageIndex != pageIndex) continue;

@@ -35,6 +35,11 @@ enum PdfAnnotationTool {
   /// existing stamp owned by the current creator).
   stamp,
 
+  /// Press-and-drag rubber-bands a new opaque borderless
+  /// [PdfRectAnnotation] over the page; a tap selects or deselects an
+  /// existing one owned by the current creator.
+  rectangle,
+
   /// Navigation tool. Input is not captured by the annotation layer; the
   /// underlying viewer handles pan, scroll, tap, and pinch-zoom. No
   /// annotation is created.
@@ -62,6 +67,10 @@ class PdfAnnotationController extends ChangeNotifier {
   /// the caller does not override the placement bbox.
   static const double _kDefaultStampLongestSidePts = 36.0;
 
+  /// Fill a rectangle takes when the caller does not choose one. White,
+  /// so the tool reads as correction fluid on a printed score.
+  static const Color kDefaultRectFillColor = Color(0xFFFFFFFF);
+
   final List<PdfInkAnnotation> _strokes = [];
   final List<PdfStampAnnotation> _stamps = [];
   final List<PdfRectAnnotation> _rects = [];
@@ -78,6 +87,7 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
   final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
   final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
+  final ValueNotifier<String?> _selectedRectId = ValueNotifier<String?>(null);
   final PdfStampPictureCache _stampPictures = PdfStampPictureCache();
   final Map<int, List<PdfAnnotationPaintEntry>> _paintSequences = <int, List<PdfAnnotationPaintEntry>>{};
   final List<_AnnotationSnapshot> _undoStack = [];
@@ -89,7 +99,9 @@ class PdfAnnotationController extends ChangeNotifier {
   _InFlightStroke? _inFlight;
   Offset? _eraserPrevPoint;
   int? _eraserPrevPage;
-  _StampDragState? _stampDragState;
+  _ShapeDragState? _stampDragState;
+  _ShapeDragState? _rectDragState;
+  _RectDraft? _rectDraft;
   final Map<int, _PageLayoutInfo> _pageLayouts = {};
 
   /// Bumps on every [appendPoint] so the live-drawing layer can repaint
@@ -234,7 +246,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// draws it last, on top.
   List<PdfAnnotationPaintEntry> paintSequenceForPage(int pageIndex) => _paintSequences.putIfAbsent(
     pageIndex,
-    () => buildPageAnnotationPaintSequence(pageIndex: pageIndex, strokes: _strokes, stamps: _stamps),
+    () => buildPageAnnotationPaintSequence(pageIndex: pageIndex, strokes: _strokes, stamps: _stamps, rects: _rects),
   );
 
   /// Read-only view of the placed stamp annotations.
@@ -351,11 +363,15 @@ class PdfAnnotationController extends ChangeNotifier {
   Future<void> exitMode({required Future<void> Function(String json)? onAnnotationsChanged}) async {
     if (!_modeListenable.value) return;
     final creator = _currentCreator;
-    // Tear down transient stamp state before flipping mode off so the
-    // selection overlay (handles + delete button) doesn't leak past
-    // the session boundary, and any half-finished drag is dropped.
+    // Tear down transient selection state before flipping mode off so
+    // the selection overlay (handles + delete button) doesn't leak past
+    // the session boundary, and any half-finished drag or rubber band
+    // is dropped.
     if (_stampDragState != null) _stampDragState = null;
+    if (_rectDragState != null) _rectDragState = null;
+    if (_rectDraft != null) _rectDraft = null;
     if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_selectedRectId.value != null) _selectedRectId.value = null;
     if (_pendingStamp.value != null) _pendingStamp.value = null;
     _modeListenable.value = false;
     if (onAnnotationsChanged != null) {
@@ -402,7 +418,10 @@ class PdfAnnotationController extends ChangeNotifier {
     _attachments
       ..clear()
       ..addAll(attachments);
+    // A wholesale replacement can retire the very shape a selection
+    // points at, so both kinds' selections go, not just the stamp's.
     if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_selectedRectId.value != null) _selectedRectId.value = null;
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
@@ -434,7 +453,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final hadStamps = _stamps.isNotEmpty;
     final hadRects = _rects.isNotEmpty;
     final hadAttachments = _attachments.isNotEmpty;
-    final hadSelection = _selectedStampId.value != null;
+    final hadSelection = _selectedStampId.value != null || _selectedRectId.value != null;
     final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
     final hadPictures = !_stampPictures.isEmpty;
     if (!hadStrokes &&
@@ -454,7 +473,11 @@ class PdfAnnotationController extends ChangeNotifier {
     // undrained here leaks every picture decoded for the previous
     // document.
     _stampPictures.clear();
-    if (hadSelection) _selectedStampId.value = null;
+    if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_selectedRectId.value != null) _selectedRectId.value = null;
+    _rectDraft = null;
+    _stampDragState = null;
+    _rectDragState = null;
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
@@ -498,11 +521,13 @@ class PdfAnnotationController extends ChangeNotifier {
   }
 
   /// Switch the active tool. No-op if [tool] is already active. Clears
-  /// any current stamp selection and pending stamp on tool change.
+  /// both kinds' selections and the pending stamp on tool change: a
+  /// gizmo belongs to the tool that put it there.
   void setTool(PdfAnnotationTool tool) {
     if (_toolListenable.value == tool) return;
     _toolListenable.value = tool;
     if (_selectedStampId.value != null) _selectedStampId.value = null;
+    if (_selectedRectId.value != null) _selectedRectId.value = null;
     if (_pendingStamp.value != null) _pendingStamp.value = null;
   }
 
@@ -788,9 +813,13 @@ class PdfAnnotationController extends ChangeNotifier {
     _attachments
       ..clear()
       ..addAll(snapshot.attachments);
-    final selectedId = _selectedStampId.value;
-    if (selectedId != null && !_stamps.any((s) => s.id == selectedId)) {
+    final selectedStampId = _selectedStampId.value;
+    if (selectedStampId != null && !_stamps.any((s) => s.id == selectedStampId)) {
       _selectedStampId.value = null;
+    }
+    final selectedRectId = _selectedRectId.value;
+    if (selectedRectId != null && !_rects.any((r) => r.id == selectedRectId)) {
+      _selectedRectId.value = null;
     }
   }
 
@@ -843,6 +872,10 @@ class PdfAnnotationController extends ChangeNotifier {
 
   /// Internal — set the selected stamp by id. Foreign-creator stamps
   /// cannot become selected (no-op). Idempotent.
+  ///
+  /// Selection is mutually exclusive across kinds: one gizmo is on
+  /// screen at a time, so selecting a stamp drops any rectangle
+  /// selection.
   void selectStamp(String? id) {
     if (id == null) {
       clearStampSelection();
@@ -851,7 +884,60 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_selectedStampId.value == id) return;
     final stamp = _stampById(id);
     if (stamp == null || !_ownsStamp(stamp)) return;
+    clearRectSelection();
     _selectedStampId.value = id;
+  }
+
+  /// `id` of the currently-selected rectangle, or `null` when none is
+  /// selected. The rectangle half of the shared gizmo's state.
+  ValueListenable<String?> get selectedRectIdListenable => _selectedRectId;
+
+  /// Clear the current rectangle selection. Idempotent.
+  void clearRectSelection() {
+    if (_selectedRectId.value == null) return;
+    _selectedRectId.value = null;
+  }
+
+  /// Select the rectangle [id]. Foreign-creator rectangles cannot become
+  /// selected (no-op), and selecting one drops any stamp selection.
+  /// Idempotent.
+  void selectRect(String? id) {
+    if (id == null) {
+      clearRectSelection();
+      return;
+    }
+    if (_selectedRectId.value == id) return;
+    final rect = _rectById(id);
+    if (rect == null || !_ownsRect(rect)) return;
+    clearStampSelection();
+    _selectedRectId.value = id;
+  }
+
+  PdfRectAnnotation? _rectById(String id) {
+    for (final r in _rects) {
+      if (r.id == id) return r;
+    }
+    return null;
+  }
+
+  /// The rectangles on [pageIndex] the current creator may select, in
+  /// reverse unified paint order: topmost first.
+  ///
+  /// Foreign-creator rectangles are skipped rather than ending the walk,
+  /// so an own rectangle lying under a bandmate's is still reachable, by
+  /// the same rule `_hitTestSelectableStampBody` applies to stamps. The
+  /// order is the paint sequence's, not the list's, so overlap resolves
+  /// the way the page actually renders.
+  List<PdfRectAnnotation> selectableRectsForHitTest(int pageIndex) {
+    final result = <PdfRectAnnotation>[];
+    final sequence = paintSequenceForPage(pageIndex);
+    for (var i = sequence.length - 1; i >= 0; i--) {
+      final entry = sequence[i];
+      if (entry is! PdfRectPaintEntry) continue;
+      if (!_ownsRect(entry.rect)) continue;
+      result.add(entry.rect);
+    }
+    return result;
   }
 
   PdfStampAnnotation? _stampById(String id) {
@@ -960,8 +1046,8 @@ class PdfAnnotationController extends ChangeNotifier {
     final stamp = _stampById(id);
     if (stamp == null || !_ownsStamp(stamp)) return;
     _pushUndoSnapshot();
-    _stampDragState = _StampDragState(
-      stampId: id,
+    _stampDragState = _ShapeDragState(
+      shapeId: id,
       handle: handle,
       originalRect: stamp.rectInPdfSpace,
       originalRotation: stamp.rotationDeg,
@@ -984,7 +1070,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (state.handle != PdfAnnotationHandle.body) return;
     final newRect = state.originalRect.shift(cumulativeDeltaPdf);
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
-    _bumpStampDrag();
+    _bumpShapeDrag();
   }
 
   /// Translate the selected stamp by [cumulativeDeltaViewer] expressed
@@ -1028,7 +1114,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _replaceSelectedStamp(
       (s) => s.copyWith(pageIndex: targetPageIdx, rectInPdfSpace: newPdfRect, updatedAt: _defaultClock()),
     );
-    _bumpStampDrag();
+    _bumpShapeDrag();
   }
 
   Rect _pdfRectToViewer(Rect pdfRect, _PageLayoutInfo info) {
@@ -1083,7 +1169,7 @@ class PdfAnnotationController extends ChangeNotifier {
     );
 
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
-    _bumpStampDrag();
+    _bumpShapeDrag();
   }
 
   /// Set the selected stamp's rotation to [absoluteAngleDeg] (degrees,
@@ -1094,8 +1180,254 @@ class PdfAnnotationController extends ChangeNotifier {
     if (state == null) return;
     if (state.handle != PdfAnnotationHandle.rotation) return;
     _replaceSelectedStamp((s) => s.copyWith(rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()));
-    _bumpStampDrag();
+    _bumpShapeDrag();
   }
+
+  // ───────────────────────────── Rectangles ─────────────────────────────
+
+  /// Start a rubber band on [pageIndex], anchored at [anchorPdfPoint].
+  ///
+  /// The anchor corner stays pinned there for the whole gesture;
+  /// [updateRectDraft] moves only the free corner. No undo snapshot is
+  /// pushed here: a draft that never commits must leave no trace.
+  /// No-op while a draft is already in flight.
+  void startRectDraft({
+    required int pageIndex,
+    required Offset anchorPdfPoint,
+    required Size pageSize,
+    Color fillColor = kDefaultRectFillColor,
+  }) {
+    if (_rectDraft != null) return;
+    _rectDraft = _RectDraft(
+      pageIndex: pageIndex,
+      anchor: _clampPointInsidePage(anchorPdfPoint, pageSize),
+      pageSize: pageSize,
+      fillColor: fillColor,
+    );
+    _bumpRectDraft();
+  }
+
+  /// Move the in-flight rubber band's free corner to [freeCornerPdfPoint].
+  ///
+  /// The corner is clamped **componentwise** into the page, so a drag
+  /// that crosses a gutter in continuous scroll never produces off-page
+  /// geometry. The rectangle is never translated to fit:
+  /// [_clampRectInsidePage] shifts rather than shrinks, which would drag
+  /// the anchored corner off the user's finger mid-preview and silently
+  /// relocate the committed rectangle, so it is deliberately not used
+  /// here. It stays the right call for [placeStamp] and for a body move.
+  void updateRectDraft(Offset freeCornerPdfPoint) {
+    final draft = _rectDraft;
+    if (draft == null) return;
+    draft.free = _clampPointInsidePage(freeCornerPdfPoint, draft.pageSize);
+    _bumpRectDraft();
+  }
+
+  /// Discard the in-flight rubber band. Pushes no undo snapshot, and
+  /// leaves no rectangle behind: the pointer-cancel path, mirroring
+  /// [cancelStroke]. Safe to call when no draft is in flight.
+  void cancelRectDraft() {
+    if (_rectDraft == null) return;
+    _rectDraft = null;
+    _bumpRectDraft();
+  }
+
+  /// Commit the in-flight rubber band and return the new rectangle's id,
+  /// or `null` when there was nothing to commit.
+  ///
+  /// A drag whose width or height is below [kMinAnnotationSizePts] is
+  /// **discarded, not clamped**, and pushes no undo snapshot, mirroring
+  /// [commitStroke] dropping a stroke with fewer than two points. The
+  /// caller is expected to fall through to its tap handling at the
+  /// pointer-up point rather than treating the gesture as consumed: the
+  /// tap/drag slop is 4 screen pixels while this threshold is 8 PDF
+  /// points, so at low zoom an ordinary fingertip tap clears the slop
+  /// and still lands here. Without that fall-through, tapping an
+  /// invisible white rectangle to select it would frequently do nothing.
+  ///
+  /// A committed rectangle is auto-selected, so its gizmo is available
+  /// immediately.
+  ///
+  /// [clock] / [idGenerator] are testability seams, as on [placeStamp].
+  String? commitRectDraft({DateTime Function()? clock, String Function()? idGenerator}) {
+    final draft = _rectDraft;
+    if (draft == null) return null;
+    _rectDraft = null;
+    final rect = draft.rect;
+    if (rect.width < kMinAnnotationSizePts || rect.height < kMinAnnotationSizePts) {
+      _bumpRectDraft();
+      return null;
+    }
+    final now = (clock ?? _defaultClock)();
+    final id = (idGenerator ?? _defaultIdGenerator)();
+    _pushUndoSnapshot();
+    _rects.add(
+      PdfRectAnnotation(
+        id: id,
+        pageIndex: draft.pageIndex,
+        rectInPdfSpace: rect,
+        rotationDeg: 0,
+        fillColor: draft.fillColor,
+        createdAt: now,
+        updatedAt: now,
+        creatorName: _currentCreator,
+      ),
+    );
+    notifyListeners();
+    selectRect(id);
+    return id;
+  }
+
+  /// The in-flight rubber band as a paintable rectangle, or `null` when
+  /// no draft is in flight on [pageIndex]. Painted last, over everything
+  /// already committed.
+  PdfRectAnnotation? inFlightRectFor(int pageIndex) {
+    final draft = _rectDraft;
+    if (draft == null || draft.pageIndex != pageIndex) return null;
+    final now = _defaultClock();
+    return PdfRectAnnotation(
+      id: '',
+      pageIndex: draft.pageIndex,
+      rectInPdfSpace: draft.rect,
+      rotationDeg: 0,
+      fillColor: draft.fillColor,
+      createdAt: now,
+      updatedAt: now,
+      creatorName: _currentCreator,
+    );
+  }
+
+  /// Remove the rectangle [id]. No-op when it does not exist or its
+  /// `creatorName` differs from the current creator. Pushes one undo
+  /// snapshot.
+  void deleteRect(String id) {
+    final rect = _rectById(id);
+    if (rect == null) return;
+    if (!_ownsRect(rect)) return;
+    _pushUndoSnapshot();
+    _rects.removeWhere((r) => r.id == id);
+    if (_selectedRectId.value == id) _selectedRectId.value = null;
+    notifyListeners();
+  }
+
+  /// Begin a rectangle drag (move/resize/rotate), pushing one undo
+  /// snapshot for the whole drag and capturing the selected rectangle's
+  /// geometry so the apply methods can rebuild it from a cumulative
+  /// delta. Mirrors [beginStampDrag], including its guards: no
+  /// selection, a foreign-creator selection, or a drag already in
+  /// progress are all no-ops.
+  void beginRectDrag(PdfAnnotationHandle handle) {
+    if (_rectDragState != null) return;
+    final id = _selectedRectId.value;
+    if (id == null) return;
+    final rect = _rectById(id);
+    if (rect == null || !_ownsRect(rect)) return;
+    _pushUndoSnapshot();
+    _rectDragState = _ShapeDragState(
+      shapeId: id,
+      handle: handle,
+      originalRect: rect.rectInPdfSpace,
+      originalRotation: rect.rotationDeg,
+      originalPageIndex: rect.pageIndex,
+    );
+  }
+
+  /// End the in-progress rectangle drag (commit boundary). Safe to call
+  /// when no drag is in progress.
+  void endRectDrag() {
+    if (_rectDragState == null) return;
+    _rectDragState = null;
+  }
+
+  /// Translate the selected rectangle by [cumulativeDeltaPdf] from the
+  /// position captured at [beginRectDrag].
+  void applyRectMove(Offset cumulativeDeltaPdf) {
+    final state = _rectDragState;
+    if (state == null) return;
+    if (state.handle != PdfAnnotationHandle.body) return;
+    _replaceSelectedRect(
+      (r) => r.copyWith(rectInPdfSpace: state.originalRect.shift(cumulativeDeltaPdf), updatedAt: _defaultClock()),
+    );
+    _bumpShapeDrag();
+  }
+
+  /// Translate the selected rectangle by [cumulativeDeltaViewer] in the
+  /// viewer's pixel space, reassigning its `pageIndex` when the bbox
+  /// centre crosses into another registered page. The same cross-page
+  /// logic [applyStampMoveViewer] uses, so a rectangle can be dragged
+  /// from page A onto page B.
+  void applyRectMoveViewer(Offset cumulativeDeltaViewer) {
+    final state = _rectDragState;
+    if (state == null) return;
+    if (state.handle != PdfAnnotationHandle.body) return;
+
+    final origPageInfo = _pageLayouts[state.originalPageIndex];
+    if (origPageInfo == null) return;
+
+    final newRectViewer = _pdfRectToViewer(state.originalRect, origPageInfo).shift(cumulativeDeltaViewer);
+    final center = newRectViewer.center;
+
+    var targetPageIdx = state.originalPageIndex;
+    for (final entry in _pageLayouts.entries) {
+      if (entry.value.viewerRect.contains(center)) {
+        targetPageIdx = entry.key;
+        break;
+      }
+    }
+    final targetPageInfo = _pageLayouts[targetPageIdx];
+    if (targetPageInfo == null) return;
+
+    final newPdfRect = _viewerRectToPdf(newRectViewer, targetPageInfo);
+    _replaceSelectedRect(
+      (r) => r.copyWith(pageIndex: targetPageIdx, rectInPdfSpace: newPdfRect, updatedAt: _defaultClock()),
+    );
+    _bumpShapeDrag();
+  }
+
+  /// Resize the selected rectangle's bbox by applying
+  /// [cumulativeDeltaPdf] to the handle captured at [beginRectDrag].
+  ///
+  /// Unlike a stamp, a corner drag does **not** lock the aspect ratio: a
+  /// cover is sized to the passage it hides, not to a symbol's
+  /// proportions. Each axis still clamps at [kMinAnnotationSizePts]
+  /// rather than discarding the shape: discard-not-clamp applies to the
+  /// creation gesture only.
+  void applyRectResize(Offset cumulativeDeltaPdf) {
+    final state = _rectDragState;
+    if (state == null) return;
+    final handle = state.handle;
+    if (handle == PdfAnnotationHandle.body || handle == PdfAnnotationHandle.rotation) return;
+
+    final newRect = resizeInLocalFrame(
+      originalRect: state.originalRect,
+      rotationDeg: state.originalRotation,
+      handle: handle,
+      delta: cumulativeDeltaPdf,
+      lockAspect: false,
+    );
+    _replaceSelectedRect((r) => r.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
+    _bumpShapeDrag();
+  }
+
+  /// Set the selected rectangle's rotation to [absoluteAngleDeg]
+  /// (degrees, CCW about the centre). A free angle: nothing snaps.
+  void applyRectRotate(double absoluteAngleDeg) {
+    final state = _rectDragState;
+    if (state == null) return;
+    if (state.handle != PdfAnnotationHandle.rotation) return;
+    _replaceSelectedRect((r) => r.copyWith(rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()));
+    _bumpShapeDrag();
+  }
+
+  void _replaceSelectedRect(PdfRectAnnotation Function(PdfRectAnnotation) update) {
+    final id = _selectedRectId.value;
+    if (id == null) return;
+    final idx = _rects.indexWhere((r) => r.id == id);
+    if (idx < 0) return;
+    _rects[idx] = update(_rects[idx]);
+  }
+
+  bool _ownsRect(PdfRectAnnotation r) => r.creatorName == _currentCreator;
 
   /// Every committed-content mutation in this class ends in a
   /// [notifyListeners], so dropping the cached per-page paint sequences
@@ -1110,13 +1442,21 @@ class PdfAnnotationController extends ChangeNotifier {
     super.notifyListeners();
   }
 
-  /// Signals a live drag delta. Stamps are painted from the cached
+  /// Signals a live drag delta. Shapes are painted from the cached
   /// sequence, which holds the pre-drag geometry, so the cache has to go
   /// even though no listener on [notifyListeners] fires.
-  void _bumpStampDrag() {
+  void _bumpShapeDrag() {
     _paintSequences.clear();
     _stampDragTick.value++;
   }
+
+  /// Signals an in-flight rubber-band frame.
+  ///
+  /// Unlike a drag, a draft changes nothing in the committed sequence:
+  /// the preview is painted outside it, like an in-flight stroke. So the
+  /// memo survives, and a rubber band costs no re-sort per pointer
+  /// sample, which is the whole reason the sequence is cached.
+  void _bumpRectDraft() => _stampDragTick.value++;
 
   void _replaceSelectedStamp(PdfStampAnnotation Function(PdfStampAnnotation) update) {
     final id = _selectedStampId.value;
@@ -1161,6 +1501,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _eraserRadius.dispose();
     _pendingStamp.dispose();
     _selectedStampId.dispose();
+    _selectedRectId.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
     _stampPictures.dispose();
@@ -1191,6 +1532,14 @@ Size _aspectFit(Size intrinsic, double longestSide) {
   final w = longestSide * intrinsic.width / intrinsic.height;
   return Size(w, longestSide);
 }
+
+/// Clamps [point] componentwise into `[0, pageSize]` on both axes.
+///
+/// Componentwise is the whole point: the rubber band's free corner has
+/// to stop at the page edge while the anchored corner stays exactly
+/// where the finger went down.
+Offset _clampPointInsidePage(Offset point, Size pageSize) =>
+    Offset(point.dx.clamp(0.0, pageSize.width), point.dy.clamp(0.0, pageSize.height));
 
 Rect _clampRectInsidePage(Rect rect, Size pageSize) {
   // Shift (don't shrink) so the bbox stays in [0, page) on both axes.
@@ -1225,20 +1574,45 @@ class _AnnotationSnapshot {
   final Map<String, PdfStampAttachment> attachments;
 }
 
-class _StampDragState {
-  _StampDragState({
-    required this.stampId,
+/// Geometry captured at the start of a move/resize/rotate drag, for a
+/// shape of either kind: the mutators reconstruct the new state from the
+/// original plus a cumulative delta, so the original must survive the
+/// whole drag.
+class _ShapeDragState {
+  _ShapeDragState({
+    required this.shapeId,
     required this.handle,
     required this.originalRect,
     required this.originalRotation,
     required this.originalPageIndex,
   });
 
-  final String stampId;
+  final String shapeId;
   final PdfAnnotationHandle handle;
   final Rect originalRect;
   final double originalRotation;
   final int originalPageIndex;
+}
+
+/// The in-flight rubber band: the anchor corner pinned at pointer-down,
+/// the page it lives on, and the fill the committed rectangle will take.
+class _RectDraft {
+  _RectDraft({
+    required this.pageIndex,
+    required this.anchor,
+    required this.pageSize,
+    required this.fillColor,
+  }) : free = anchor;
+
+  final int pageIndex;
+  final Offset anchor;
+  final Size pageSize;
+  final Color fillColor;
+
+  /// The corner that follows the finger, already clamped into the page.
+  Offset free;
+
+  Rect get rect => Rect.fromPoints(anchor, free);
 }
 
 class _PageLayoutInfo {

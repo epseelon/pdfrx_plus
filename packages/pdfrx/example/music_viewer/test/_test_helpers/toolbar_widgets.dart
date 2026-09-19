@@ -67,12 +67,14 @@ class AnnotationToolButtons extends StatelessWidget {
     required this.toolListenable,
     required this.onSelectTool,
     this.stampAvailable = false,
+    this.rectangleAvailable = false,
     super.key,
   });
 
   final ValueListenable<PdfAnnotationTool> toolListenable;
   final ValueChanged<PdfAnnotationTool> onSelectTool;
   final bool stampAvailable;
+  final bool rectangleAvailable;
 
   @override
   Widget build(BuildContext context) {
@@ -118,6 +120,14 @@ class AnnotationToolButtons extends StatelessWidget {
               selectedIcon: const Icon(Icons.bookmark),
               icon: const Icon(Icons.bookmark_border),
               onPressed: () => onSelectTool(PdfAnnotationTool.stamp),
+            ),
+          if (rectangleAvailable)
+            IconButton.filledTonal(
+              tooltip: 'Rectangle',
+              isSelected: tool == PdfAnnotationTool.rectangle,
+              selectedIcon: const Icon(Icons.rectangle),
+              icon: const Icon(Icons.rectangle_outlined),
+              onPressed: () => onSelectTool(PdfAnnotationTool.rectangle),
             ),
         ],
       ),
@@ -182,6 +192,7 @@ class AnnotationStylePopups extends StatelessWidget {
           onSelected: controller.setAnnotationEraserRadius,
         );
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.rectangle:
       case PdfAnnotationTool.hand:
         return const SizedBox.shrink();
     }

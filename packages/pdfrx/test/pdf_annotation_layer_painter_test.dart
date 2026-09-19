@@ -9,6 +9,7 @@ import 'package:pdfrx/src/widgets/annotations/annotation_paint_sequence.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_controller.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_layer.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_ink_annotation.dart';
+import 'package:pdfrx/src/widgets/annotations/pdf_rect_annotation.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_stamp_annotation.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_stamp_picture.dart';
 
@@ -54,6 +55,24 @@ PdfStampAnnotation _stampAt(DateTime createdAt, {String id = 'stamp', String sha
       createdAt: createdAt,
       updatedAt: createdAt,
     );
+
+PdfRectAnnotation _rectAt(
+  DateTime createdAt, {
+  String id = 'rect',
+  int pageIndex = 0,
+  Color? fillColor = const Color(0xFFFFFFFF),
+  double rotationDeg = 0,
+  String? creatorName,
+}) => PdfRectAnnotation(
+  id: id,
+  pageIndex: pageIndex,
+  rectInPdfSpace: const Rect.fromLTWH(5, 5, 40, 30),
+  rotationDeg: rotationDeg,
+  fillColor: fillColor,
+  createdAt: createdAt,
+  updatedAt: createdAt,
+  creatorName: creatorName,
+);
 
 const String _sha = 'sha-test';
 
@@ -109,14 +128,19 @@ Future<PdfAnnotationController> _pumpPage(
   WidgetTester tester, {
   required List<PdfInkAnnotation> strokes,
   required List<PdfStampAnnotation> stamps,
+  List<PdfRectAnnotation> rects = const [],
+  PdfAnnotationTool? tool,
+  String? creatorName,
 }) async {
   final controller = PdfAnnotationController()..stampPictureDecoder = _fakeDecoder;
   addTearDown(controller.dispose);
   controller.setAllWithStamps(
     strokes: strokes,
     stamps: stamps,
+    rects: rects,
     attachments: {_sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml')},
   );
+  if (tool != null) controller.enterMode(creatorName: creatorName, tool: tool);
   await tester.pumpWidget(
     Center(
       child: SizedBox(width: 100, height: 100, child: CustomPaint(painter: _PageTestPainter(controller))),
@@ -150,6 +174,13 @@ PdfInkAnnotation _reCreated(PdfInkAnnotation stroke, DateTime createdAt) => PdfI
 bool _isDrawPath(Symbol method, List<dynamic> arguments) => method == #drawPath;
 
 bool _isDrawPicture(Symbol method, List<dynamic> arguments) => method == #drawPicture;
+
+bool _isDrawRect(Symbol method, List<dynamic> arguments) => method == #drawRect;
+
+/// The hint outline is the only stroked path a rectangle emits, so a
+/// stroked `drawPath` on a page that carries no ink is the hint.
+bool _isStrokedPath(Symbol method, List<dynamic> arguments) =>
+    method == #drawPath && (arguments[1] as Paint).style == PaintingStyle.stroke;
 
 /// Minimal painter that delegates to [paintInkStroke] so the `paints`
 /// matcher can inspect the emitted `drawPath` call.
@@ -310,12 +341,133 @@ void main() {
     });
   });
 
+  group('paintPageAnnotations rectangles in the unified z-order', () {
+    testWidgets('a rectangle created after a stroke paints over it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'ink')],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 2), id: 'rect')],
+      );
+
+      // `paints` advances through the recorded calls in order, so this
+      // asserts the stroke is drawn BEFORE the rectangle: it is covered.
+      expect(find.byType(CustomPaint), paints..something(_isDrawPath)..something(_isDrawRect));
+    });
+
+    testWidgets('a rectangle created before a stroke paints under it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: [_strokeAt(DateTime.utc(2026, 1, 2), id: 'ink')],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), id: 'rect')],
+      );
+
+      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isDrawPath));
+    });
+
+    testWidgets('a rectangle created after a stamp paints over it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: [_stampAt(DateTime.utc(2026, 1, 1), id: 'stamp')],
+        rects: [_rectAt(DateTime.utc(2026, 1, 2), id: 'rect')],
+      );
+
+      expect(find.byType(CustomPaint), paints..something(_isDrawPicture)..something(_isDrawRect));
+    });
+
+    testWidgets('a stamp created after a rectangle paints over it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: [_stampAt(DateTime.utc(2026, 1, 2), id: 'stamp')],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), id: 'rect')],
+      );
+
+      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isDrawPicture));
+    });
+
+    testWidgets('a rectangle with no fillColor paints nothing', (tester) async {
+      // A hand-authored `pspdfkit/shape/rectangle` with no fill decodes
+      // and round-trips, but must never be rendered as an opaque block.
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), id: 'rect', fillColor: null)],
+      );
+
+      expect(find.byType(CustomPaint), isNot(paints..something(_isDrawRect)));
+    });
+  });
+
+  group('paintPageAnnotations rectangle hint outline', () {
+    testWidgets('is drawn on an own rectangle while the rectangle tool is active', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), creatorName: 'alice')],
+        tool: PdfAnnotationTool.rectangle,
+        creatorName: 'alice',
+      );
+
+      // Painted inside the rectangle's own step of the sequence: the
+      // fill first, the hint immediately on top of it.
+      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isStrokedPath));
+    });
+
+    testWidgets('is absent when annotation mode is off, but the rectangle still renders', (tester) async {
+      // Rendering is never gated: a rectangle drawn on a build where the
+      // tool is enabled must still cover the score on one where it is
+      // not, so turning the flag off never orphans data.
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), creatorName: 'alice')],
+      );
+
+      expect(find.byType(CustomPaint), paints..something(_isDrawRect));
+      expect(find.byType(CustomPaint), isNot(paints..something(_isStrokedPath)));
+    });
+
+    testWidgets('is absent under any other tool', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), creatorName: 'alice')],
+        tool: PdfAnnotationTool.pen,
+        creatorName: 'alice',
+      );
+
+      expect(find.byType(CustomPaint), isNot(paints..something(_isStrokedPath)));
+    });
+
+    testWidgets('is absent on a foreign-creator rectangle', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1), creatorName: 'bob')],
+        tool: PdfAnnotationTool.rectangle,
+        creatorName: 'alice',
+      );
+
+      expect(find.byType(CustomPaint), paints..something(_isDrawRect));
+      expect(find.byType(CustomPaint), isNot(paints..something(_isStrokedPath)));
+    });
+  });
+
   group('buildPageAnnotationPaintSequence total order', () {
     List<String> idsOf(List<PdfAnnotationPaintEntry> entries) => entries
         .map(
           (e) => switch (e) {
             PdfInkPaintEntry() => e.stroke.id ?? 'ink@${e.indexInKind}',
             PdfStampPaintEntry() => e.stamp.id,
+            PdfRectPaintEntry() => e.rect.id,
           },
         )
         .toList(growable: false);
@@ -414,15 +566,45 @@ void main() {
       );
     });
 
-    test('the kind ordinal separates a stamp and a stroke that tie on timestamp and id', () {
+    test('rectangles join the sequence in creation order alongside the other kinds', () {
+      final entries = buildPageAnnotationPaintSequence(
+        pageIndex: 0,
+        strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'ink')],
+        stamps: [_stampAt(DateTime.utc(2026, 1, 3), id: 'stamp')],
+        rects: [_rectAt(DateTime.utc(2026, 1, 2), id: 'rect')],
+      );
+
+      expect(idsOf(entries), ['ink', 'rect', 'stamp']);
+    });
+
+    test('a rectangle anchored to another page is not in the sequence', () {
+      final entries = buildPageAnnotationPaintSequence(
+        pageIndex: 0,
+        strokes: const [],
+        stamps: const [],
+        rects: [
+          _rectAt(DateTime.utc(2026, 1, 1), id: 'here'),
+          _rectAt(DateTime.utc(2026, 1, 1), id: 'there', pageIndex: 1),
+        ],
+      );
+
+      expect(idsOf(entries), ['here']);
+    });
+
+    test('the kind ordinal separates a stamp, a rectangle and a stroke that tie on timestamp and id', () {
       final entries = buildPageAnnotationPaintSequence(
         pageIndex: 0,
         strokes: [_strokeAt(_epoch, id: 'same')],
         stamps: [_stampAt(_epoch, id: 'same')],
+        rects: [_rectAt(_epoch, id: 'same')],
       );
 
       // ink < rect < stamp.
-      expect(entries.map((e) => e.kind).toList(), [PdfAnnotationPaintKind.ink, PdfAnnotationPaintKind.stamp]);
+      expect(entries.map((e) => e.kind).toList(), [
+        PdfAnnotationPaintKind.ink,
+        PdfAnnotationPaintKind.rect,
+        PdfAnnotationPaintKind.stamp,
+      ]);
     });
   });
 }

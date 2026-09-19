@@ -8,6 +8,7 @@ import 'annotation_paint_sequence.dart';
 import 'pdf_annotation_controller.dart';
 import 'pdf_annotation_overlay_labels.dart';
 import 'pdf_ink_annotation.dart';
+import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
 import 'pdf_stamp_picture.dart';
@@ -99,6 +100,11 @@ const double _kRotateHandleOffsetPx = _kRotateHandleGapPx + _kRotateHandlePx / 2
 const double _kDeleteButtonPx = 24.0;
 const double _kSelectionOutlinePx = 1.5;
 
+/// Padding between a rectangle's own bounds and its handle rectangle.
+/// Zero, so the handles sit exactly on the border: unlike a stamp, a
+/// rectangle has no symbol for them to clear.
+const double _kRectHandlePaddingPx = 0.0;
+
 /// Movement threshold (in widget pixels) past which a stamp-tool
 /// pointer-down is treated as a drag rather than a tap. Deliberately
 /// looser than the framework's `kPanSlop` (~18 px) so handle drags fire
@@ -113,6 +119,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   Offset? _pointerDownLocal;
   PdfAnnotationHandle? _pendingHandle;
   bool _dragRecognized = false;
+  bool _rubberBanding = false;
   Offset? _stampCenterLocal;
   double? _initialRotationAngle;
   double? _originalStampRotationDeg;
@@ -175,6 +182,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                   _controller,
                   _controller.stampDragChangedListenable,
                   _controller.selectedStampIdListenable,
+                  _controller.selectedRectIdListenable,
                 ]),
                 builder: (context, _) {
                   final pageStamps = _controller.stamps
@@ -183,6 +191,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
 
                   final selectedId = _controller.selectedStampIdListenable.value;
                   final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
+                  final selectedRectId = _controller.selectedRectIdListenable.value;
+                  final selectedRect = selectedRectId == null ? null : _findSelectedRect(selectedRectId);
 
                   return Stack(
                     clipBehavior: Clip.none,
@@ -230,6 +240,19 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                                   onPointerCancel: (_) => _onStampPointerCancel(),
                                 );
                               }
+                              if (tool == PdfAnnotationTool.rectangle) {
+                                // Raw Listener for the same reason the
+                                // stamp tool uses one: handle drags must
+                                // not have to clear the gesture arena's
+                                // pan slop on touch devices.
+                                return Listener(
+                                  behavior: HitTestBehavior.opaque,
+                                  onPointerDown: (e) => _onRectPointerDown(e.localPosition),
+                                  onPointerMove: (e) => _onRectPointerMove(e.localPosition),
+                                  onPointerUp: (e) => _onRectPointerUp(e.localPosition),
+                                  onPointerCancel: (_) => _onRectPointerCancel(),
+                                );
+                              }
                               return GestureDetector(
                                 behavior: HitTestBehavior.opaque,
                                 onPanStart: (details) => _onPanStart(tool, details.localPosition),
@@ -247,11 +270,19 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       // the Listener below, which routes them based on
                       // our own hit-tests in page-local space (so handles
                       // floating outside the bbox still receive input).
+                      // Selection is mutually exclusive across kinds,
+                      // so at most one of these is non-null.
                       if (selectedStamp != null)
                         _buildSelectionOverlay(
                           id: selectedStamp.id,
                           selectionRect: _stampSelectionRect(selectedStamp),
                           rotationDeg: selectedStamp.rotationDeg,
+                        )
+                      else if (selectedRect != null)
+                        _buildSelectionOverlay(
+                          id: selectedRect.id,
+                          selectionRect: _rectSelectionRect(selectedRect),
+                          rotationDeg: selectedRect.rotationDeg,
                         ),
                     ],
                   );
@@ -641,6 +672,212 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     }
   }
 
+  // ─────────────────────── Rectangle tool: geometry ──────────────────────
+
+  List<PdfRectAnnotation> _pageRects() =>
+      _controller.rects.where((r) => r.pageIndex == _page.pageNumber - 1).toList(growable: false);
+
+  PdfRectAnnotation? _findSelectedRect(String id) {
+    for (final r in _pageRects()) {
+      if (r.id == id) return r;
+    }
+    return null;
+  }
+
+  Rect _rectLocalRect(PdfRectAnnotation rect) {
+    final scaleX = _pageRect.width / _page.width;
+    final scaleY = _pageRect.height / _page.height;
+    return Rect.fromLTWH(
+      rect.rectInPdfSpace.left * scaleX,
+      rect.rectInPdfSpace.top * scaleY,
+      rect.rectInPdfSpace.width * scaleX,
+      rect.rectInPdfSpace.height * scaleY,
+    );
+  }
+
+  /// The handle rectangle for [rect]. Padding is `0.0`, so it coincides
+  /// with the shape's own bounds and the handles sit on the border.
+  Rect _rectSelectionRect(PdfRectAnnotation rect) => _selectionRect(_rectLocalRect(rect), _kRectHandlePaddingPx);
+
+  PdfAnnotationHandle? _hitTestRectHandles(PdfRectAnnotation rect, Offset local) => hitTestHandles(
+    rect: _rectSelectionRect(rect),
+    rotationDeg: rect.rotationDeg,
+    point: local,
+    hitRadius: _kHandleHitRadiusPx,
+    rotationHandleOffset: _kRotateHandleOffsetPx,
+  );
+
+  bool _rectBodyContains(PdfRectAnnotation rect, Offset local) =>
+      containsRotated(rect: _rectSelectionRect(rect), rotationDeg: rect.rotationDeg, point: local);
+
+  bool _hitTestRectDeleteButton(PdfRectAnnotation rect, Offset local) {
+    final selectionRect = _rectSelectionRect(rect);
+    final unrotated = unrotatePointToLocal(local, center: selectionRect.center, rotationDeg: rect.rotationDeg);
+    return _deleteButtonRectInLocalFrame(selectionRect).contains(unrotated);
+  }
+
+  /// The topmost rectangle the current creator may select whose rotated
+  /// bounds contain [local], or `null`.
+  ///
+  /// The candidate list is already in reverse unified paint order with
+  /// foreign-creator rectangles skipped, so an own rectangle lying under
+  /// a bandmate's is still reachable.
+  PdfRectAnnotation? _hitTestSelectableRectBody(Offset local) {
+    for (final rect in _controller.selectableRectsForHitTest(_page.pageNumber - 1)) {
+      if (_rectBodyContains(rect, local)) return rect;
+    }
+    return null;
+  }
+
+  // ─────────────────────── Rectangle tool: Listener ──────────────────────
+
+  void _onRectPointerDown(Offset local) {
+    _pointerDownLocal = local;
+    _dragRecognized = false;
+    _rubberBanding = false;
+    _pendingHandle = null;
+
+    // Drag precedence starts here: only the SELECTED rectangle can
+    // capture a drag, and only through one of its handles or its body.
+    // A press inside an unselected rectangle leaves `_pendingHandle`
+    // null and becomes a new rubber band, so a cover can always be
+    // drawn on top of an existing one.
+    final selectedId = _controller.selectedRectIdListenable.value;
+    if (selectedId == null) return;
+    final selected = _findSelectedRect(selectedId);
+    if (selected == null) return;
+    if (selected.creatorName != _controller.currentCreator) return;
+
+    final hit = _hitTestRectHandles(selected, local);
+    if (hit == null) return;
+    _pendingHandle = hit;
+    if (hit == PdfAnnotationHandle.rotation) {
+      final rect = _rectLocalRect(selected);
+      _stampCenterLocal = rect.center;
+      _initialRotationAngle = math.atan2(local.dy - rect.center.dy, local.dx - rect.center.dx);
+      _originalStampRotationDeg = selected.rotationDeg;
+    }
+  }
+
+  void _onRectPointerMove(Offset local) {
+    final start = _pointerDownLocal;
+    if (start == null) return;
+    final dx = local.dx - start.dx;
+    final dy = local.dy - start.dy;
+
+    if (!_dragRecognized) {
+      if (dx * dx + dy * dy < _kStampDragSlopPx * _kStampDragSlopPx) return;
+      _dragRecognized = true;
+      final pending = _pendingHandle;
+      if (pending == null) {
+        // The anchor is the pointer-DOWN point, not where the slop was
+        // crossed, so the rubber band starts where the finger landed.
+        _rubberBanding = true;
+        _controller.startRectDraft(
+          pageIndex: _page.pageNumber - 1,
+          anchorPdfPoint: _toPdfSpace(start),
+          pageSize: Size(_page.width, _page.height),
+        );
+      } else {
+        _activeHandle = pending;
+        _controller.beginRectDrag(pending);
+      }
+    }
+
+    if (_rubberBanding) {
+      _controller.updateRectDraft(_toPdfSpace(local));
+      return;
+    }
+
+    final handle = _activeHandle;
+    if (handle == null) return;
+
+    if (handle == PdfAnnotationHandle.rotation) {
+      final center = _stampCenterLocal!;
+      final initial = _initialRotationAngle!;
+      final current = math.atan2(local.dy - center.dy, local.dx - center.dx);
+      // Screen-y grows downward, so a clockwise angular delta in screen
+      // space is a CCW rotation in our PDF-space convention.
+      final deltaRad = -(current - initial);
+      _controller.applyRectRotate(_originalStampRotationDeg! + deltaRad * 180.0 / math.pi);
+      return;
+    }
+
+    if (handle == PdfAnnotationHandle.body) {
+      // Viewer-pixel space, so crossing a page boundary can hand the
+      // rectangle to a sibling annotation layer mid-drag.
+      _controller.applyRectMoveViewer(local - start);
+      return;
+    }
+    _controller.applyRectResize(_toPdfSpace(local) - _toPdfSpace(start));
+  }
+
+  void _onRectPointerUp(Offset local) {
+    if (_rubberBanding) {
+      if (_controller.commitRectDraft() == null) {
+        // Sub-minimum, so discarded. The gesture is NOT consumed: the
+        // tap/drag slop is 4 screen pixels while the discard threshold
+        // is 8 PDF points, so at low zoom an ordinary fingertip tap
+        // lands here. Falling through to the tap precedence at the
+        // pointer-up point is what makes an invisible white rectangle
+        // selectable with a finger.
+        _handleRectTap(local);
+      }
+    } else if (_dragRecognized) {
+      _endRectDrag();
+    } else {
+      // No movement crossed the slop, so treat this as a tap at the
+      // down position: taps don't drift if the finger settles slightly.
+      _handleRectTap(_pointerDownLocal ?? local);
+    }
+    _resetRectPointerState();
+  }
+
+  void _onRectPointerCancel() {
+    if (_rubberBanding) {
+      _controller.cancelRectDraft();
+    } else if (_dragRecognized) {
+      _endRectDrag();
+    }
+    _resetRectPointerState();
+  }
+
+  void _resetRectPointerState() {
+    _rubberBanding = false;
+    _resetStampPointerState();
+  }
+
+  void _endRectDrag() {
+    if (_activeHandle == null) return;
+    _controller.endRectDrag();
+    _activeHandle = null;
+  }
+
+  /// Tap precedence: the delete button, then selecting a rectangle,
+  /// then deselecting.
+  void _handleRectTap(Offset local) {
+    // The delete button sits OUTSIDE the bbox, so the body and
+    // empty-area branches below would otherwise eat the tap the user
+    // explicitly aimed at.
+    final selectedId = _controller.selectedRectIdListenable.value;
+    if (selectedId != null) {
+      final selected = _findSelectedRect(selectedId);
+      if (selected != null && _hitTestRectDeleteButton(selected, local)) {
+        _controller.deleteRect(selected.id);
+        return;
+      }
+    }
+
+    final selectable = _hitTestSelectableRectBody(local);
+    if (selectable != null) {
+      _controller.selectRect(selectable.id);
+      return;
+    }
+
+    // Empty space, or a rectangle owned by another creator.
+    _controller.clearRectSelection();
+  }
+
   // ───────────────────────── Other tools: GestureDetector ────────────────
 
   void _onPanStart(PdfAnnotationTool tool, Offset local) {
@@ -672,10 +909,11 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.rectangle:
       case PdfAnnotationTool.hand:
-        // stamp: handled by the Listener branch. hand: no gesture
-        // widget is mounted, so this is unreachable — covered for
-        // switch exhaustiveness only.
+        // stamp and rectangle: handled by the Listener branch. hand:
+        // no gesture widget is mounted, so this is unreachable, and is
+        // covered for switch exhaustiveness only.
         return;
     }
   }
@@ -693,6 +931,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           radiusInPdfPoints: _controller.eraserRadius,
         );
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.rectangle:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -706,6 +945,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.rectangle:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -719,6 +959,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       case PdfAnnotationTool.eraser:
         _controller.endErase();
       case PdfAnnotationTool.stamp:
+      case PdfAnnotationTool.rectangle:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -809,6 +1050,104 @@ void paintInkStroke(Canvas canvas, PdfInkAnnotation stroke, {required double sca
   canvas.drawPath(buildInkStrokePath(points, scaleX: scaleX, scaleY: scaleY), paint);
 }
 
+/// Colour of a rectangle's hint outline: a low-contrast grey that reads
+/// as a faint guide over a white cover without competing with the score.
+const Color kRectHintColor = Color(0x8C7A7A7A);
+
+/// Stroke width (screen pixels) of a rectangle's hint outline.
+const double kRectHintStrokeWidthPx = 1.0;
+
+/// Dash and gap lengths (screen pixels) of a rectangle's hint outline.
+const double kRectHintDashPx = 4.0;
+const double kRectHintGapPx = 3.0;
+
+/// A [Path] tracing [rect]'s border as dashes of [dashLength] separated
+/// by gaps of [gapLength], starting at the top-left corner of each edge.
+///
+/// Dart's `Paint` has no dash support, so the dashes are laid out here
+/// rather than handed to the stroker.
+@visibleForTesting
+Path buildDashedRectPath(Rect rect, {required double dashLength, required double gapLength}) {
+  final path = Path();
+  final period = dashLength + gapLength;
+  if (period <= 0 || dashLength <= 0) return path..addRect(rect);
+
+  void dashEdge(Offset from, Offset to) {
+    final length = (to - from).distance;
+    if (length <= 0) return;
+    final direction = (to - from) / length;
+    for (var start = 0.0; start < length; start += period) {
+      final end = math.min(start + dashLength, length);
+      path
+        ..moveTo(from.dx + direction.dx * start, from.dy + direction.dy * start)
+        ..lineTo(from.dx + direction.dx * end, from.dy + direction.dy * end);
+    }
+  }
+
+  dashEdge(rect.topLeft, rect.topRight);
+  dashEdge(rect.topRight, rect.bottomRight);
+  dashEdge(rect.bottomRight, rect.bottomLeft);
+  dashEdge(rect.bottomLeft, rect.topLeft);
+  return path;
+}
+
+/// Paints [rect] onto [canvas], scaling from PDF point space by
+/// [scaleX]/[scaleY] and rotating about the bbox centre. Screen y grows
+/// downward, so the package's counter-clockwise `rotationDeg` becomes a
+/// negative canvas angle, the same sign [paintStamp] uses.
+///
+/// A rectangle with no [PdfRectAnnotation.fillColor] paints no fill.
+/// `fillColor` is optional in the Instant JSON shape schema, so a
+/// third-party or legacy pspdfkit-authored rectangle without one is an
+/// outline-only shape: filling it white would hide score content its
+/// author never meant to cover, on a build where the rectangle tool may
+/// not even exist.
+///
+/// [showHint] draws the tool's dashed locator outline over the fill.
+/// It is painted here, inside this rectangle's own step of the unified
+/// sequence, rather than as a pass above it, so a rectangle covered by
+/// a later shape has its hint covered too. It is a local viewing
+/// affordance and is never persisted.
+@visibleForTesting
+void paintRect(
+  Canvas canvas,
+  PdfRectAnnotation rect, {
+  required double scaleX,
+  required double scaleY,
+  required bool showHint,
+}) {
+  final fill = rect.fillColor;
+  if (fill == null && !showHint) return;
+  final bounds = Rect.fromLTWH(
+    rect.rectInPdfSpace.left * scaleX,
+    rect.rectInPdfSpace.top * scaleY,
+    rect.rectInPdfSpace.width * scaleX,
+    rect.rectInPdfSpace.height * scaleY,
+  );
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+
+  canvas.save();
+  if (rect.rotationDeg != 0) {
+    final center = bounds.center;
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(-rect.rotationDeg * math.pi / 180.0);
+    canvas.translate(-center.dx, -center.dy);
+  }
+  if (fill != null) {
+    canvas.drawRect(bounds, Paint()..color = fill);
+  }
+  if (showHint) {
+    canvas.drawPath(
+      buildDashedRectPath(bounds, dashLength: kRectHintDashPx, gapLength: kRectHintGapPx),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = kRectHintStrokeWidthPx
+        ..color = kRectHintColor,
+    );
+  }
+  canvas.restore();
+}
+
 /// Paints [stamp]'s decoded [picture] onto [canvas], scaling from PDF
 /// point space by [scaleX]/[scaleY].
 ///
@@ -868,6 +1207,12 @@ void paintStamp(
 /// shape created after another hides it regardless of kind. In-flight
 /// strokes are drawn last, on top.
 ///
+/// A rectangle whose `creatorName` matches the current creator carries a
+/// dashed hint outline while annotation mode is on and the rectangle
+/// tool is active, so an invisible white cover can still be found. The
+/// hint is painted inside that rectangle's own step, never as a pass
+/// above the sequence.
+///
 /// A stamp whose attachment has not been decoded yet draws nothing for
 /// this frame and schedules its decode; the completion bumps
 /// `PdfAnnotationController.stampPicturesChangedListenable`, which the
@@ -884,7 +1229,13 @@ void paintPageAnnotations(
   final pageIndex = page.pageNumber - 1;
   final sequence = controller.paintSequenceForPage(pageIndex);
   final inFlight = controller.inFlightStrokesFor(pageIndex).toList(growable: false);
-  if (sequence.isEmpty && inFlight.isEmpty) return;
+  final inFlightRect = controller.inFlightRectFor(pageIndex);
+  if (sequence.isEmpty && inFlight.isEmpty && inFlightRect == null) return;
+  // The hint is a viewing affordance of the rectangle tool, so both of
+  // its gates are read once per paint rather than per entry.
+  final hintsVisible =
+      controller.annotationModeListenable.value && controller.currentToolListenable.value == PdfAnnotationTool.rectangle;
+  final creator = controller.currentCreator;
   final scaleX = pageRect.width / page.width;
   final scaleY = pageRect.height / page.height;
   canvas.save();
@@ -895,6 +1246,14 @@ void paintPageAnnotations(
     switch (entry) {
       case PdfInkPaintEntry():
         paintInkStroke(canvas, entry.stroke, scaleX: scaleX, scaleY: scaleY);
+      case PdfRectPaintEntry():
+        paintRect(
+          canvas,
+          entry.rect,
+          scaleX: scaleX,
+          scaleY: scaleY,
+          showHint: hintsVisible && entry.rect.creatorName == creator,
+        );
       case PdfStampPaintEntry():
         final sha = entry.stamp.attachmentSha256;
         final picture = controller.stampPictureFor(sha);
@@ -907,6 +1266,11 @@ void paintPageAnnotations(
   }
   for (final stroke in inFlight) {
     paintInkStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
+  }
+  // The rubber band follows the finger, so it is painted last, over
+  // everything already committed.
+  if (inFlightRect != null) {
+    paintRect(canvas, inFlightRect, scaleX: scaleX, scaleY: scaleY, showHint: false);
   }
   canvas.restore();
 }
