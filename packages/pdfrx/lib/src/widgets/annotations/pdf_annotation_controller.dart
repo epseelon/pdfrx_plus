@@ -85,6 +85,7 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<Color> _highlighterColor = ValueNotifier<Color>(const Color(0xFFFFFF00));
   final ValueNotifier<double> _highlighterWidth = ValueNotifier<double>(12.0);
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
+  final ValueNotifier<Color> _rectFillColor = ValueNotifier<Color>(kDefaultRectFillColor);
   final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
   final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
   final ValueNotifier<String?> _selectedRectId = ValueNotifier<String?>(null);
@@ -187,6 +188,18 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Current eraser radius value. See [eraserRadiusListenable] for change
   /// notifications.
   double get eraserRadius => _eraserRadius.value;
+
+  /// Rectangle-scoped fill color baked into every new rectangle
+  /// ([startRectDraft] reads it when the caller passes no explicit
+  /// `fillColor`). The pen and highlighter keep their own colors, so
+  /// switching tools never clobbers another tool's setting. Persists
+  /// across `enterMode` / `exitMode` cycles, not across app sessions.
+  ValueListenable<Color> get rectFillColorListenable => _rectFillColor;
+
+  /// Current rectangle fill color value. Always fully opaque: the tool
+  /// exposes no opacity control. See [rectFillColorListenable] for
+  /// change notifications.
+  Color get rectFillColor => _rectFillColor.value;
 
   /// The stamp library entry currently armed for placement, or `null`
   /// when no stamp is pending. While non-null and the active tool is
@@ -306,12 +319,21 @@ class PdfAnnotationController extends ChangeNotifier {
     _eraserRadius.value = value;
   }
 
+  /// Replace the fill color new rectangles are created with. Idempotent.
+  ///
+  /// Already-committed rectangles keep the color they were created
+  /// with; this only arms the next [startRectDraft].
+  void setRectFillColor(Color value) {
+    if (_rectFillColor.value == value) return;
+    _rectFillColor.value = value;
+  }
+
   /// Enter annotation drawing mode.
   ///
   /// Idempotent — calling while mode is already `true` does not re-fire
   /// the mode listener. Any non-null override values ([tool],
   /// [strokeColor], [strokeWidth], [highlighterColor], [highlighterWidth],
-  /// [eraserRadius]) are applied through the matching setters; null
+  /// [eraserRadius], [rectFillColor]) are applied through the matching setters; null
   /// overrides keep the previously-set value (the controller remembers
   /// tool/color/thickness across mode toggles).
   ///
@@ -333,6 +355,7 @@ class PdfAnnotationController extends ChangeNotifier {
     Color? highlighterColor,
     double? highlighterWidth,
     double? eraserRadius,
+    Color? rectFillColor,
   }) {
     _currentCreator = creatorName;
     if (tool != null) _toolListenable.value = tool;
@@ -341,6 +364,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (highlighterColor != null) setHighlighterColor(highlighterColor);
     if (highlighterWidth != null) setHighlighterWidth(highlighterWidth);
     if (eraserRadius != null) setEraserRadius(eraserRadius);
+    if (rectFillColor != null) setRectFillColor(rectFillColor);
     if (_modeListenable.value) return;
     _undoStack.clear();
     _redoStack.clear();
@@ -1191,18 +1215,21 @@ class PdfAnnotationController extends ChangeNotifier {
   /// [updateRectDraft] moves only the free corner. No undo snapshot is
   /// pushed here: a draft that never commits must leave no trace.
   /// No-op while a draft is already in flight.
+  ///
+  /// [fillColor] defaults to the armed [rectFillColor], so the gesture
+  /// layer does not have to read the palette itself.
   void startRectDraft({
     required int pageIndex,
     required Offset anchorPdfPoint,
     required Size pageSize,
-    Color fillColor = kDefaultRectFillColor,
+    Color? fillColor,
   }) {
     if (_rectDraft != null) return;
     _rectDraft = _RectDraft(
       pageIndex: pageIndex,
       anchor: _clampPointInsidePage(anchorPdfPoint, pageSize),
       pageSize: pageSize,
-      fillColor: fillColor,
+      fillColor: fillColor ?? _rectFillColor.value,
     );
     _bumpRectDraft();
   }
@@ -1499,6 +1526,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _highlighterColor.dispose();
     _highlighterWidth.dispose();
     _eraserRadius.dispose();
+    _rectFillColor.dispose();
     _pendingStamp.dispose();
     _selectedStampId.dispose();
     _selectedRectId.dispose();

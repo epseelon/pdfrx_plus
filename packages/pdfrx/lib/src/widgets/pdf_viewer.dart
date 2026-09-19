@@ -5848,6 +5848,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     Color? highlighterColor,
     double? highlighterWidth,
     double? eraserRadius,
+    Color? rectFillColor,
   }) async {
     _annotationController.enterMode(
       creatorName: creatorName,
@@ -5857,6 +5858,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       highlighterColor: highlighterColor,
       highlighterWidth: highlighterWidth,
       eraserRadius: eraserRadius,
+      rectFillColor: rectFillColor,
     );
   }
 
@@ -5910,6 +5912,20 @@ class PdfViewerController extends ValueListenable<Matrix4> {
 
   /// Listenable carrying the active eraser radius.
   ValueListenable<double> get annotationEraserRadiusListenable => _annotationController.eraserRadiusListenable;
+
+  /// Current fill color new rectangles are created with. Always fully
+  /// opaque: the tool exposes no opacity control. See
+  /// [annotationRectFillColorListenable] for change notifications.
+  Color get annotationRectFillColor => _annotationController.rectFillColor;
+
+  /// Replace the fill color used for new [PdfAnnotationTool.rectangle]
+  /// shapes. Already-committed rectangles keep their own color.
+  void setAnnotationRectFillColor(Color value) => _annotationController.setRectFillColor(value);
+
+  /// Listenable carrying the active rectangle fill color. Tracked apart
+  /// from the pen and highlighter colors and kept across
+  /// `enterAnnotationMode` / `exitAnnotationMode` cycles.
+  ValueListenable<Color> get annotationRectFillColorListenable => _annotationController.rectFillColorListenable;
 
   /// Arm a [PdfStampDefinition] for placement (or pass `null` to disarm).
   /// While the active tool is [PdfAnnotationTool.stamp] and a stamp is

@@ -713,4 +713,90 @@ void main() {
       expect(controller.selectedRectIdListenable.value, isNull);
     });
   });
+
+  group('PdfAnnotationController rectangle fill color', () {
+    test('defaults to opaque white', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+
+      expect(controller.rectFillColor, const Color(0xFFFFFFFF));
+      expect(controller.rectFillColor.a, 1.0);
+    });
+
+    test('a new rectangle is created with the armed color', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+
+      controller.setRectFillColor(const Color(0xFFFAF6EC));
+      _rubberBand(controller, from: const Offset(40, 50), to: const Offset(140, 110));
+
+      expect(controller.rects.single.fillColor, const Color(0xFFFAF6EC));
+    });
+
+    test('an explicit fillColor still wins over the armed color', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+
+      controller.setRectFillColor(const Color(0xFFFAF6EC));
+      controller.startRectDraft(
+        pageIndex: 0,
+        anchorPdfPoint: const Offset(40, 50),
+        pageSize: _pageSize,
+        fillColor: const Color(0xFF007AFF),
+      );
+      controller.updateRectDraft(const Offset(140, 110));
+      controller.commitRectDraft(idGenerator: () => 'explicit');
+
+      expect(controller.rects.single.fillColor, const Color(0xFF007AFF));
+    });
+
+    test('already-committed rectangles keep the color they were made with', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+
+      _rubberBand(controller, from: const Offset(40, 50), to: const Offset(140, 110), id: 'first');
+      controller.setRectFillColor(const Color(0xFF000000));
+
+      expect(controller.rects.single.fillColor, const Color(0xFFFFFFFF));
+    });
+
+    test('survives an exitMode / enterMode cycle and leaves the other tools alone', () async {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+      final penBefore = controller.strokeColor;
+      final highlighterBefore = controller.highlighterColor;
+
+      controller.setRectFillColor(const Color(0xFFE5E5E5));
+      await controller.exitMode(onAnnotationsChanged: null);
+      controller.enterMode(creatorName: 'alice', tool: PdfAnnotationTool.rectangle);
+
+      expect(controller.rectFillColor, const Color(0xFFE5E5E5));
+      expect(controller.strokeColor, penBefore);
+      expect(controller.highlighterColor, highlighterBefore);
+    });
+
+    test('switching tools does not clobber it', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+
+      controller.setRectFillColor(const Color(0xFFFFFF00));
+      controller.setTool(PdfAnnotationTool.pen);
+      controller.setStrokeColor(const Color(0xFF34C759));
+      controller.setTool(PdfAnnotationTool.rectangle);
+
+      expect(controller.rectFillColor, const Color(0xFFFFFF00));
+    });
+
+    test('is idempotent: re-setting the same color fires no listener', () {
+      final controller = _armed();
+      addTearDown(controller.dispose);
+      var notifications = 0;
+      controller.rectFillColorListenable.addListener(() => notifications++);
+
+      controller.setRectFillColor(const Color(0xFF000000));
+      controller.setRectFillColor(const Color(0xFF000000));
+
+      expect(notifications, 1);
+    });
+  });
 }
