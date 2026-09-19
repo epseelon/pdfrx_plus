@@ -419,7 +419,13 @@ PdfStampAnnotation? _decodeStampEntry(
   final id = entry['id'];
   if (id is! String || id.isEmpty) return null;
 
-  final createdAt = _parseTimestamp(entry['createdAt']) ?? DateTime.now().toUtc();
+  // Same deterministic Unix-epoch sentinel the ink decoder uses, NOT
+  // `DateTime.now()`. A `now()` fallback floats a timestamp-less stamp to the
+  // top of the unified z-order on every decode and moves it again on the next
+  // one, and because [encodeInstantJson] re-emits that fresh `createdAt`, the
+  // re-split element id churns in the backing store on every round trip. See
+  // [_decodeInkEntry] for the same reasoning.
+  final createdAt = _parseTimestamp(entry['createdAt']) ?? _epochSentinel;
   final updatedAt = _parseTimestamp(entry['updatedAt']) ?? createdAt;
   final rawCreatorName = entry['creatorName'];
   final creatorName = rawCreatorName is String ? rawCreatorName : null;

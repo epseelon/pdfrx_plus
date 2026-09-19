@@ -4,20 +4,26 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
+import 'annotation_paint_sequence.dart';
 import 'pdf_annotation_controller.dart';
 import 'pdf_annotation_overlay_labels.dart';
 import 'pdf_ink_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
+import 'pdf_stamp_picture.dart';
 import 'selection_geometry.dart';
 
-/// Internal per-page widget that paints all [PdfInkAnnotation]s and
-/// [PdfStampAnnotation]s anchored to [page]. Mounted by `PdfViewer` for
-/// every visible page.
+/// Internal per-page input and overlay layer for the annotations
+/// anchored to [page]. Mounted by `PdfViewer` for every visible page.
+///
+/// No annotation kind renders as a widget here: ink strokes and stamps
+/// are both painted onto the page canvas by [paintPageAnnotations], as
+/// one creation-ordered sequence, which is what makes a single z-order
+/// across kinds possible. This layer contributes only the transient
+/// eraser cursor, the selection gizmo and the gesture handling.
 ///
 /// Coordinates are converted from PDF point space (top-left origin) to
-/// widget pixels using the page's current display rect. Strokes that
-/// extend past the page bounds are visually clipped.
+/// widget pixels using the page's current display rect.
 ///
 /// While [PdfAnnotationController.annotationModeListenable] is `true`, a
 /// per-page input handler is mounted on top of the painter to capture
@@ -37,7 +43,6 @@ class PdfAnnotationLayer extends StatefulWidget {
     required this.page,
     required this.pageRect,
     required this.highlighterOpacity,
-    this.stampImageBuilder,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
     this.labels = const PdfAnnotationOverlayLabels(),
@@ -65,11 +70,6 @@ class PdfAnnotationLayer extends StatefulWidget {
   /// `[0.0, 1.0]` at use time, so out-of-range values from the params
   /// are silently coerced rather than rejected.
   final double highlighterOpacity;
-
-  /// Optional builder for stamp widgets. When `null` (the host did not
-  /// supply a renderer), stamps still render as a transparent
-  /// placeholder; placement gestures still work for testing.
-  final PdfStampImageBuilder? stampImageBuilder;
 
   /// Strings for the selection overlay's affordances. Sourced by the
   /// `PdfViewer` from `PdfViewerParams.annotationOverlayLabels`;
@@ -180,8 +180,6 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                   final pageStamps = _controller.stamps
                       .where((s) => s.pageIndex == _page.pageNumber - 1)
                       .toList(growable: false);
-                  final scaleX = _pageRect.width / _page.width;
-                  final scaleY = _pageRect.height / _page.height;
 
                   final selectedId = _controller.selectedStampIdListenable.value;
                   final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
@@ -189,8 +187,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                   return Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      // Ink strokes (pen + highlighter) are painted on the
-                      // page canvas by the `PdfViewer` page painter so the
+                      // Ink strokes and stamps are both painted on the
+                      // page canvas by the `PdfViewer` page painter: one
+                      // sequence, so they share a z-order, and so the
                       // highlighter can multiply-blend with the page
                       // content. This painter only renders the transient
                       // eraser cursor preview.
@@ -209,22 +208,6 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                         ),
                         size: _pageRect.size,
                       ),
-                      for (final stamp in pageStamps)
-                        Positioned(
-                          key: Key('stamp:${stamp.id}'),
-                          left: stamp.rectInPdfSpace.left * scaleX,
-                          top: stamp.rectInPdfSpace.top * scaleY,
-                          width: stamp.rectInPdfSpace.width * scaleX,
-                          height: stamp.rectInPdfSpace.height * scaleY,
-                          child: Transform.rotate(
-                            angle: -stamp.rotationDeg * math.pi / 180.0,
-                            child: SizedBox(
-                              width: stamp.rectInPdfSpace.width * scaleX,
-                              height: stamp.rectInPdfSpace.height * scaleY,
-                              child: _buildStampChild(context, stamp, scaleX, scaleY),
-                            ),
-                          ),
-                        ),
                       if (modeOn)
                         Positioned.fill(
                           child: ValueListenableBuilder<PdfAnnotationTool>(
@@ -286,16 +269,6 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       if (s.id == id) return s;
     }
     return null;
-  }
-
-  Widget _buildStampChild(BuildContext context, PdfStampAnnotation stamp, double scaleX, double scaleY) {
-    final builder = widget.stampImageBuilder;
-    final attachment = _controller.attachments[stamp.attachmentSha256];
-    if (builder == null || attachment == null) {
-      return const SizedBox.shrink();
-    }
-    final displaySize = Size(stamp.rectInPdfSpace.width * scaleX, stamp.rectInPdfSpace.height * scaleY);
-    return builder(context, attachment.bytes, stamp.contentType, displaySize);
   }
 
   /// The shape-neutral selection gizmo: an outline, eight resize
@@ -818,7 +791,7 @@ Path buildInkStrokePath(List<Offset> pointsInPdfSpace, {required double scaleX, 
 ///
 /// The highlighter's [BlendMode.multiply] only tints the page content
 /// (rather than covering it) when [canvas] already holds the page
-/// bitmap underneath — i.e. when called via [paintPageInkAnnotations]
+/// bitmap underneath, i.e. when called via [paintPageAnnotations]
 /// from the `PdfViewer` page painter.
 @visibleForTesting
 void paintInkStroke(Canvas canvas, PdfInkAnnotation stroke, {required double scaleX, required double scaleY}) {
@@ -836,32 +809,101 @@ void paintInkStroke(Canvas canvas, PdfInkAnnotation stroke, {required double sca
   canvas.drawPath(buildInkStrokePath(points, scaleX: scaleX, scaleY: scaleY), paint);
 }
 
-/// Paints every committed and in-flight ink stroke anchored to [page]
-/// onto [canvas], positioned and clipped to [pageRect].
+/// Paints [stamp]'s decoded [picture] onto [canvas], scaling from PDF
+/// point space by [scaleX]/[scaleY].
 ///
-/// Called from the `PdfViewer` page painter so strokes share the page
-/// bitmap's canvas: this is what lets highlighter strokes
+/// The picture's intrinsic size is scaled onto the stamp's bbox on both
+/// axes independently, reproducing the `BoxFit.fill` the widget layer
+/// used, and the result is rotated about the bbox centre. Screen y grows
+/// downward, so the package's counter-clockwise `rotationDeg` becomes a
+/// negative canvas angle, the same sign the widget layer's
+/// `Transform.rotate` used.
+///
+/// Draws nothing for a degenerate picture or bbox rather than emitting a
+/// transform with an infinite or NaN scale factor.
+@visibleForTesting
+void paintStamp(
+  Canvas canvas,
+  PdfStampAnnotation stamp,
+  PdfDecodedStampPicture picture, {
+  required double scaleX,
+  required double scaleY,
+}) {
+  final intrinsic = picture.size;
+  if (intrinsic.width <= 0 || intrinsic.height <= 0) return;
+  final rect = Rect.fromLTWH(
+    stamp.rectInPdfSpace.left * scaleX,
+    stamp.rectInPdfSpace.top * scaleY,
+    stamp.rectInPdfSpace.width * scaleX,
+    stamp.rectInPdfSpace.height * scaleY,
+  );
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  canvas.save();
+  if (stamp.rotationDeg != 0) {
+    final center = rect.center;
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(-stamp.rotationDeg * math.pi / 180.0);
+    canvas.translate(-center.dx, -center.dy);
+  }
+  canvas.translate(rect.left, rect.top);
+  canvas.scale(rect.width / intrinsic.width, rect.height / intrinsic.height);
+  canvas.drawPicture(picture.picture);
+  canvas.restore();
+}
+
+/// Paints every committed annotation anchored to [page] onto [canvas],
+/// positioned and clipped to [pageRect], followed by any in-flight
+/// stroke.
+///
+/// Called from the `PdfViewer` page painter so annotations share the
+/// page bitmap's canvas: this is what lets highlighter strokes
 /// ([BlendMode.multiply]) tint the underlying page content instead of
-/// covering it. Pen and highlighter strokes are drawn in creation
-/// order; in-flight strokes are drawn last (on top).
-void paintPageInkAnnotations(
+/// covering it, and it is why stamps are painted here rather than
+/// mounted as widgets above the page: one canvas is what makes a single
+/// z-order across annotation kinds possible.
+///
+/// Committed annotations of every kind are drawn as one sequence in the
+/// page's creation order (see [buildPageAnnotationPaintSequence]), so a
+/// shape created after another hides it regardless of kind. In-flight
+/// strokes are drawn last, on top.
+///
+/// A stamp whose attachment has not been decoded yet draws nothing for
+/// this frame and schedules its decode; the completion bumps
+/// `PdfAnnotationController.stampPicturesChangedListenable`, which the
+/// viewer wires to a canvas invalidation. A stamp whose bytes cannot be
+/// decoded at all draws nothing for good (logged once by the cache) and
+/// never throws from here, so one broken attachment cannot blank the
+/// rest of the page.
+void paintPageAnnotations(
   Canvas canvas, {
   required Rect pageRect,
   required PdfPage page,
   required PdfAnnotationController controller,
 }) {
   final pageIndex = page.pageNumber - 1;
-  final committed = controller.strokes.where((s) => s.pageIndex == pageIndex).toList(growable: false);
+  final sequence = controller.paintSequenceForPage(pageIndex);
   final inFlight = controller.inFlightStrokesFor(pageIndex).toList(growable: false);
-  if (committed.isEmpty && inFlight.isEmpty) return;
+  if (sequence.isEmpty && inFlight.isEmpty) return;
   final scaleX = pageRect.width / page.width;
   final scaleY = pageRect.height / page.height;
   canvas.save();
   canvas.translate(pageRect.left, pageRect.top);
-  // Strokes that extend past the page bounds are visually clipped.
+  // Annotations that extend past the page bounds are visually clipped.
   canvas.clipRect(Offset.zero & pageRect.size);
-  for (final stroke in committed) {
-    paintInkStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
+  for (final entry in sequence) {
+    switch (entry) {
+      case PdfInkPaintEntry():
+        paintInkStroke(canvas, entry.stroke, scaleX: scaleX, scaleY: scaleY);
+      case PdfStampPaintEntry():
+        final sha = entry.stamp.attachmentSha256;
+        final picture = controller.stampPictureFor(sha);
+        if (picture == null) {
+          controller.ensureStampPictureDecoded(sha);
+        } else {
+          paintStamp(canvas, entry.stamp, picture, scaleX: scaleX, scaleY: scaleY);
+        }
+    }
   }
   for (final stroke in inFlight) {
     paintInkStroke(canvas, stroke, scaleX: scaleX, scaleY: scaleY);
@@ -869,9 +911,20 @@ void paintPageInkAnnotations(
   canvas.restore();
 }
 
+/// Legacy name for [paintPageAnnotations], kept so the fork stays
+/// mergeable with upstream pdfrx. The painter is kind-neutral now: the
+/// same sequence carries ink and stamps.
+@Deprecated('Renamed to paintPageAnnotations now that the painter draws every annotation kind.')
+void paintPageInkAnnotations(
+  Canvas canvas, {
+  required Rect pageRect,
+  required PdfPage page,
+  required PdfAnnotationController controller,
+}) => paintPageAnnotations(canvas, pageRect: pageRect, page: page, controller: controller);
+
 /// Paints the eraser tool's circular cursor preview onto the annotation
-/// layer. Ink strokes themselves are painted on the page canvas by
-/// [paintPageInkAnnotations]; this painter only renders the transient
+/// layer. Annotations themselves are painted on the page canvas by
+/// [paintPageAnnotations]; this painter only renders the transient
 /// eraser affordance.
 @visibleForTesting
 class EraserCursorPainter extends CustomPainter {

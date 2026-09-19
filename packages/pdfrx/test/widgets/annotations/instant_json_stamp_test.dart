@@ -263,4 +263,94 @@ void main() {
       expect(decoded.stamps.single.rotationDeg, closeTo(47.5, 1e-9));
     });
   });
+  group('decodeInstantJsonFull timestamp fallback', () {
+    // Requirement 38: a missing `createdAt` must decode to the SAME
+    // deterministic Unix-epoch sentinel for every annotation kind, never
+    // to `DateTime.now()`. A `now()` fallback floats a timestamp-less
+    // entry to the top of the unified z-order on every decode and moves
+    // it again on the next one, and because `encodeInstantJson` re-emits
+    // the fresh `createdAt`, the re-split element id churns in the
+    // backing store on every round trip. The ink decoder already got
+    // this right; the stamp decoder did not.
+    test('a timestamp-less entry of every kind decodes to the epoch sentinel, not now()', () {
+      final bytes = Uint8List.fromList(utf8.encode('<svg/>'));
+      final hash = sha256.convert(bytes).toString();
+      final json = jsonEncode({
+        'format': 'https://pspdfkit.com/instant-json/v1',
+        'annotations': [
+          {
+            'v': 1,
+            'type': 'pspdfkit/ink',
+            'id': 'ink-no-timestamps',
+            'pageIndex': 0,
+            'lines': {
+              'points': [
+                [
+                  [0, 0],
+                  [1, 1],
+                ],
+              ],
+            },
+            'lineWidth': 2,
+            'strokeColor': '#FF3B30',
+          },
+          {
+            'v': 1,
+            'type': 'pspdfkit/image',
+            'id': 'stamp-no-timestamps',
+            'pageIndex': 0,
+            'bbox': [0, 0, 10, 10],
+            'imageAttachmentId': hash,
+            'contentType': 'image/svg+xml',
+          },
+        ],
+        'attachments': {
+          hash: {'binary': base64Encode(bytes), 'contentType': 'image/svg+xml'},
+        },
+      });
+
+      final decoded = decodeInstantJsonFull(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 1.0,
+      );
+
+      final epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      expect(decoded.strokes.single.createdAt, epoch);
+      expect(decoded.strokes.single.updatedAt, epoch);
+      expect(decoded.stamps.single.createdAt, epoch);
+      expect(decoded.stamps.single.updatedAt, epoch);
+    });
+
+    test('a decode of the same timestamp-less stamp twice yields the same createdAt', () {
+      final bytes = Uint8List.fromList(utf8.encode('<svg/>'));
+      final hash = sha256.convert(bytes).toString();
+      final json = jsonEncode({
+        'format': 'https://pspdfkit.com/instant-json/v1',
+        'annotations': [
+          {
+            'v': 1,
+            'type': 'pspdfkit/image',
+            'id': 'stamp-no-timestamps',
+            'pageIndex': 0,
+            'bbox': [0, 0, 10, 10],
+            'imageAttachmentId': hash,
+            'contentType': 'image/svg+xml',
+          },
+        ],
+        'attachments': {
+          hash: {'binary': base64Encode(bytes), 'contentType': 'image/svg+xml'},
+        },
+      });
+      PdfStampAnnotation decodeOnce() => decodeInstantJsonFull(
+        json,
+        pageCount: 1,
+        defaultColor: const Color(0xFFFF0000),
+        defaultLineWidth: 1.0,
+      ).stamps.single;
+
+      expect(decodeOnce().createdAt, decodeOnce().createdAt);
+    });
+  });
 }

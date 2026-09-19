@@ -337,17 +337,40 @@ class _PdfViewerState extends State<PdfViewer>
     _widgetUpdated(null);
   }
 
+  /// Rebuilds the widget tree *and* repaints the page canvas when the
+  /// annotation mode or the active tool changes.
+  ///
+  /// The canvas invalidation is not optional: the unified page painter
+  /// reads the mode and the tool, so a `setState` alone would leave the
+  /// already-rasterized page showing the previous tool's rendering.
   void _onAnnotationModeChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    _invalidate();
   }
 
-  /// Repaints the page canvas when ink annotations change. Pen and
-  /// highlighter strokes are painted onto the page canvas (so the
-  /// highlighter can multiply-blend with the page content), so the
-  /// canvas must be invalidated as strokes are drawn, committed,
-  /// erased, undone, redone, imported, or cleared.
+  /// Repaints the page canvas when annotation content changes. Every
+  /// annotation kind is painted onto the page canvas (so they share one
+  /// z-order, and so the highlighter can multiply-blend with the page
+  /// content), so the canvas must be invalidated as annotations are
+  /// drawn, committed, erased, dragged, undone, redone, imported, or
+  /// cleared, and when a stamp attachment finishes decoding.
   void _onAnnotationContentChanged() {
     if (mounted) _invalidate();
+  }
+
+  /// Pushes the params' stamp decoder into the annotation controller,
+  /// falling back to the package's own SVG decoder.
+  ///
+  /// The decode seam is declared on [PdfViewerParams] but the cache it
+  /// feeds belongs to the annotation controller, whose lifetime spans
+  /// documents and which holds no reference to the params. So the viewer
+  /// pushes: on attach, and again whenever the params change. The
+  /// controller ignores a re-set of the same decoder, which matters
+  /// because a `PdfViewerParams` is typically rebuilt on every frame.
+  void _syncStampPictureDecoder() {
+    _annotationController?.stampPictureDecoder =
+        widget.params.stampPictureDecoder ?? decodeStampPictureWithVectorGraphics;
   }
 
   /// `true` when annotation mode is on AND the active tool captures
@@ -370,6 +393,9 @@ class _PdfViewerState extends State<PdfViewer>
   void didUpdateWidget(covariant PdfViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
     _widgetUpdated(oldWidget);
+    if (widget.params.stampPictureDecoder != oldWidget.params.stampPictureDecoder) {
+      _syncStampPictureDecoder();
+    }
     if (widget.params.interactionDelegateProvider != oldWidget.params.interactionDelegateProvider) {
       _updateInteractionDelegate();
     }
@@ -2465,7 +2491,6 @@ class _PdfViewerState extends State<PdfViewer>
               page: page,
               pageRect: rectExternal,
               highlighterOpacity: widget.params.highlighterOpacity,
-              stampImageBuilder: widget.params.stampImageBuilder,
               selectedStampInterfaceColor: widget.params.selectedStampInterfaceColor,
               selectedStampPadding: widget.params.selectedStampPadding,
               labels: widget.params.annotationOverlayLabels,
@@ -2777,12 +2802,13 @@ class _PdfViewerState extends State<PdfViewer>
         }
       }
 
-      // Ink annotations (pen + highlighter) are painted on the page
-      // canvas — after the page bitmap — so highlighter strokes can
-      // multiply-blend with the page content rather than covering it.
+      // Every annotation kind is painted on the page canvas, after the
+      // page bitmap, as one creation-ordered sequence, so they share a
+      // z-order and highlighter strokes can multiply-blend with the page
+      // content rather than covering it.
       final annotationController = _annotationController;
       if (annotationController != null) {
-        paintPageInkAnnotations(canvas, pageRect: rect, page: page, controller: annotationController);
+        paintPageAnnotations(canvas, pageRect: rect, page: page, controller: annotationController);
       }
     }
 
@@ -5295,6 +5321,8 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       _annotationController.currentToolListenable.removeListener(__state!._onAnnotationModeChanged);
       _annotationController.removeListener(__state!._onAnnotationContentChanged);
       _annotationController.inFlightChangedListenable.removeListener(__state!._onAnnotationContentChanged);
+      _annotationController.stampDragChangedListenable.removeListener(__state!._onAnnotationContentChanged);
+      _annotationController.stampPicturesChangedListenable.removeListener(__state!._onAnnotationContentChanged);
     }
     __state = state;
     if (__state != null) {
@@ -5303,14 +5331,22 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       // The active tool feeds `_navigationSuppressedByAnnotation`, which
       // drives `_effectivePanEnabled` / `_effectiveScaleEnabled` in
       // build(). Rebuild on tool change so hand↔drawing-tool toggles
-      // flip pan/scale immediately.
+      // flip pan/scale immediately, and repaint the page canvas, which
+      // the unified painter renders from the active tool too.
       _annotationController.currentToolListenable.addListener(__state!._onAnnotationModeChanged);
-      // Committed-stroke changes (commit / erase / undo / redo / import
-      // / clear) fire on the controller itself; per-point updates while
-      // a stroke is being drawn fire on `inFlightChangedListenable`.
-      // Both must repaint the page canvas where strokes are drawn.
+      // Committed-annotation changes (commit / erase / undo / redo /
+      // import / clear) fire on the controller itself; per-point updates
+      // while a stroke is being drawn fire on `inFlightChangedListenable`;
+      // live stamp drag deltas fire on `stampDragChangedListenable`; a
+      // stamp attachment finishing its decode fires on
+      // `stampPicturesChangedListenable`. Every one of them is an input
+      // the page painter reads, so all four must repaint the canvas, not
+      // merely rebuild the widget tree.
       _annotationController.addListener(__state!._onAnnotationContentChanged);
       _annotationController.inFlightChangedListenable.addListener(__state!._onAnnotationContentChanged);
+      _annotationController.stampDragChangedListenable.addListener(__state!._onAnnotationContentChanged);
+      _annotationController.stampPicturesChangedListenable.addListener(__state!._onAnnotationContentChanged);
+      __state!._syncStampPictureDecoder();
     }
   }
 

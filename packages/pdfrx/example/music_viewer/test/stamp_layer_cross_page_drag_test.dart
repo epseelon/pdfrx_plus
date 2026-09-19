@@ -9,13 +9,6 @@ import '_test_helpers/fake_pdf_page.dart';
 
 const _pageSize = Size(200, 200);
 
-Widget _stampPlaceholder(BuildContext context, Uint8List bytes, String contentType, Size displaySize) {
-  return SizedBox.fromSize(
-    size: displaySize,
-    child: const ColoredBox(color: Color(0xFFCCCCCC)),
-  );
-}
-
 /// Mounts two annotation layers side-by-side at fixed viewer positions
 /// so cross-page hit-testing has stable coordinates.
 Future<void> _pumpTwoPageLayers(WidgetTester tester, PdfAnnotationController controller) async {
@@ -43,7 +36,6 @@ Future<void> _pumpTwoPageLayers(WidgetTester tester, PdfAnnotationController con
                     page: pageA,
                     pageRect: const Rect.fromLTWH(0, 0, 200, 200),
                     highlighterOpacity: 0.35,
-                    stampImageBuilder: _stampPlaceholder,
                   ),
                 ),
                 Positioned(
@@ -57,7 +49,6 @@ Future<void> _pumpTwoPageLayers(WidgetTester tester, PdfAnnotationController con
                     page: pageB,
                     pageRect: const Rect.fromLTWH(200, 0, 200, 200),
                     highlighterOpacity: 0.35,
-                    stampImageBuilder: _stampPlaceholder,
                   ),
                 ),
               ],

@@ -21,6 +21,10 @@ dependencies:
   ffi:
   flutter:
     sdk: flutter
+  # Stamp annotations are painted onto the page canvas, so the package
+  # decodes SVG stamp bytes itself (via `vg.loadPicture`) rather than
+  # asking the integrator for a widget.
+  flutter_svg: ^2.2.0
   http:
   path:
   path_provider: ^2.1.5

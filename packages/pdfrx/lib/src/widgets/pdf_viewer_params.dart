@@ -10,6 +10,7 @@ import '../utils/fixed_overscroll_physics.dart';
 import '../utils/platform.dart';
 import 'annotations/pdf_annotation_overlay_labels.dart';
 import 'annotations/pdf_stamp_definition.dart';
+import 'annotations/pdf_stamp_picture.dart';
 import 'pdf_page_layout.dart';
 import 'pdf_viewer.dart';
 import 'pdf_viewer_scroll_thumb.dart';
@@ -102,6 +103,7 @@ class PdfViewerParams {
     this.highlighterOpacity = 0.35,
     this.stampCategories,
     this.stampImageBuilder,
+    this.stampPictureDecoder,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
     this.annotationOverlayLabels = const PdfAnnotationOverlayLabels(),
@@ -710,11 +712,33 @@ class PdfViewerParams {
   /// library never breaks past documents.
   final List<PdfViewerStampCategory>? stampCategories;
 
-  /// Renderer for stamp images. Required when [stampCategories] is
-  /// non-empty (asserted at construction). Receives the raw bytes,
-  /// declared MIME type, and the exact display size in widget pixels;
-  /// must respect the requested size (no intrinsic sizing).
+  /// Renderer for the stamp **picker's** thumbnails, which remain
+  /// widgets. Required when [stampCategories] is non-empty (asserted at
+  /// construction). Receives the raw bytes, declared MIME type, and the
+  /// exact display size in widget pixels; must respect the requested
+  /// size (no intrinsic sizing).
+  ///
+  /// Stamps placed **on a page** do not go through this builder: they
+  /// are painted onto the page canvas from a decoded picture, so that
+  /// every annotation kind shares one z-order. See
+  /// [stampPictureDecoder].
   final PdfStampImageBuilder? stampImageBuilder;
+
+  /// Decodes a stamp attachment's raw bytes into something the page
+  /// painter can draw: a disposable picture plus its intrinsic size.
+  ///
+  /// Optional. When `null`, the package's own
+  /// [decodeStampPictureWithVectorGraphics] is used, so an integrator
+  /// needs no wiring to get SVG stamps on the page. Supply one to plug
+  /// in a different vector pipeline, or to support a content type this
+  /// package does not decode.
+  ///
+  /// Called off the paint path: the viewer hands it to the annotation
+  /// controller, which owns the decoded-picture cache (keyed by
+  /// attachment SHA-256) and its lifetime. Returning `null` or throwing
+  /// both mean "cannot decode": the stamp draws nothing, the failure is
+  /// logged once, and the attachment is not retried.
+  final PdfStampPictureDecoder? stampPictureDecoder;
 
   /// Color of the selection outline, resize handles, rotation handle,
   /// and delete button rendered around the currently selected stamp.
@@ -859,6 +883,7 @@ class PdfViewerParams {
         other.highlighterOpacity != highlighterOpacity ||
         other.stampCategories != stampCategories ||
         other.stampImageBuilder != stampImageBuilder ||
+        other.stampPictureDecoder != stampPictureDecoder ||
         other.selectedStampInterfaceColor != selectedStampInterfaceColor ||
         other.selectedStampPadding != selectedStampPadding ||
         other.annotationOverlayLabels != annotationOverlayLabels ||
@@ -941,6 +966,7 @@ class PdfViewerParams {
         other.highlighterOpacity == highlighterOpacity &&
         other.stampCategories == stampCategories &&
         other.stampImageBuilder == stampImageBuilder &&
+        other.stampPictureDecoder == stampPictureDecoder &&
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.selectedStampPadding == selectedStampPadding &&
         other.annotationOverlayLabels == annotationOverlayLabels &&
@@ -1021,6 +1047,7 @@ class PdfViewerParams {
         highlighterOpacity.hashCode ^
         stampCategories.hashCode ^
         stampImageBuilder.hashCode ^
+        stampPictureDecoder.hashCode ^
         selectedStampInterfaceColor.hashCode ^
         selectedStampPadding.hashCode ^
         annotationOverlayLabels.hashCode ^

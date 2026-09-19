@@ -11,6 +11,8 @@ export 'src/widgets/annotations/pdf_annotation_overlay_labels.dart';
 export 'src/widgets/annotations/pdf_ink_annotation.dart';
 export 'src/widgets/annotations/pdf_stamp_annotation.dart';
 export 'src/widgets/annotations/pdf_stamp_definition.dart';
+export 'src/widgets/annotations/pdf_stamp_picture.dart'
+    show PdfDecodedStampPicture, PdfStampPictureDecoder, decodeStampPictureWithVectorGraphics, kSvgStampContentType;
 export 'src/widgets/pdf_page_layout.dart';
 export 'src/widgets/pdf_text_searcher.dart';
 export 'src/widgets/pdf_viewer.dart';

@@ -4,10 +4,12 @@ import 'dart:ui';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
+import 'annotation_paint_sequence.dart';
 import 'instant_json.dart';
 import 'pdf_ink_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
+import 'pdf_stamp_picture.dart';
 import 'selection_geometry.dart';
 
 export 'selection_geometry.dart' show PdfAnnotationHandle, kMinAnnotationSizePts;
@@ -74,6 +76,8 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
   final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
   final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
+  final PdfStampPictureCache _stampPictures = PdfStampPictureCache();
+  final Map<int, List<PdfAnnotationPaintEntry>> _paintSequences = <int, List<PdfAnnotationPaintEntry>>{};
   final List<_AnnotationSnapshot> _undoStack = [];
   final List<_AnnotationSnapshot> _redoStack = [];
   final ValueNotifier<bool> _canUndo = ValueNotifier<bool>(false);
@@ -183,6 +187,53 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Bumps on every stamp drag delta (move/resize/rotate) so the layer
   /// can repaint affordances live without flushing the main listener.
   Listenable get stampDragChangedListenable => _stampDragTick;
+
+  /// Bumps when a stamp attachment finishes decoding into a paintable
+  /// picture. The page painter is synchronous and skips stamps it cannot
+  /// draw yet, so the canvas must be invalidated when one arrives.
+  Listenable get stampPicturesChangedListenable => _stampPictures.changedListenable;
+
+  /// The decoder turning stamp attachment bytes into paintable pictures.
+  ///
+  /// Sourced by the `PdfViewer` from `PdfViewerParams.stampPictureDecoder`
+  /// on attach and whenever the params change, falling back to the
+  /// package's own [decodeStampPictureWithVectorGraphics]. Held here
+  /// rather than read from the params because the cache's lifetime is
+  /// the controller's, and this class has no reference to the params.
+  ///
+  /// Idempotent: re-setting the same decoder keeps the cache; a
+  /// different one invalidates everything the previous one produced.
+  set stampPictureDecoder(PdfStampPictureDecoder value) => _stampPictures.decoder = value;
+
+  /// The decoded picture for the attachment [sha], or `null` when it has
+  /// not been decoded. The painter draws only non-null entries.
+  PdfDecodedStampPicture? stampPictureFor(String sha) => _stampPictures[sha];
+
+  /// Schedules a decode of the attachment [sha] if it is not already
+  /// decoded, in flight, or known to be undecodable. No-op when no
+  /// attachment is stored under [sha].
+  ///
+  /// Called by the painter when it meets a stamp it cannot draw yet;
+  /// [setAllWithStamps] pre-warms every referenced attachment so that
+  /// path is rarely taken.
+  void ensureStampPictureDecoded(String sha) {
+    final attachment = _attachments[sha];
+    if (attachment == null) return;
+    _stampPictures.ensureDecoded(sha: sha, bytes: attachment.bytes, contentType: attachment.contentType);
+  }
+
+  /// The page's committed annotations of every kind, in the single
+  /// creation-ordered sequence the page painter walks. Built once per
+  /// content change and cached per page: `_invalidate` fires on every
+  /// pointer sample of a stroke, so sorting on each paint would put
+  /// O(n log n) work on every frame of every drag.
+  ///
+  /// The in-flight stroke is not part of this sequence; the painter
+  /// draws it last, on top.
+  List<PdfAnnotationPaintEntry> paintSequenceForPage(int pageIndex) => _paintSequences.putIfAbsent(
+    pageIndex,
+    () => buildPageAnnotationPaintSequence(pageIndex: pageIndex, strokes: _strokes, stamps: _stamps),
+  );
 
   /// Read-only view of the placed stamp annotations.
   List<PdfStampAnnotation> get stamps => List.unmodifiable(_stamps);
@@ -342,8 +393,21 @@ class PdfAnnotationController extends ChangeNotifier {
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
+    // Wholesale replacement is the one point where an attachment can
+    // stop being referenced, so it is where decoded pictures are evicted
+    // (and disposed). Undo/redo never evicts, so restoring a deleted
+    // stamp never costs a re-decode.
+    _stampPictures.retainOnly(_attachments.keys.toSet());
+    // Pre-warm rather than waiting for the first paint: an undecoded
+    // stamp draws nothing for that frame, which would show as a flash of
+    // missing stamps every time a document or a remote refresh lands.
+    for (final sha in _referencedAttachmentShas()) {
+      ensureStampPictureDecoded(sha);
+    }
     notifyListeners();
   }
+
+  Set<String> _referencedAttachmentShas() => _stamps.map((s) => s.attachmentSha256).toSet();
 
   /// Remove all strokes, stamps, attachments, selection, and pending
   /// stamp (the last reset matches the spec's `clearAnnotations`
@@ -354,12 +418,17 @@ class PdfAnnotationController extends ChangeNotifier {
     final hadAttachments = _attachments.isNotEmpty;
     final hadSelection = _selectedStampId.value != null;
     final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
-    if (!hadStrokes && !hadStamps && !hadAttachments && !hadSelection && !hadHistory) {
+    final hadPictures = !_stampPictures.isEmpty;
+    if (!hadStrokes && !hadStamps && !hadAttachments && !hadSelection && !hadHistory && !hadPictures) {
       return;
     }
     _strokes.clear();
     _stamps.clear();
     _attachments.clear();
+    // The viewer calls this on every document swap, so a cache left
+    // undrained here leaks every picture decoded for the previous
+    // document.
+    _stampPictures.clear();
     if (hadSelection) _selectedStampId.value = null;
     _undoStack.clear();
     _redoStack.clear();
@@ -792,6 +861,10 @@ class PdfAnnotationController extends ChangeNotifier {
       // state, including dropping the attachment when it was newly added.
       _pushUndoSnapshot();
       _attachments.putIfAbsent(hash, () => PdfStampAttachment(bytes: bytes, contentType: contentType));
+      // Start decoding now rather than leaving it to the first paint, so
+      // a freshly-placed stamp appears as soon as the decode lands
+      // instead of a frame after the painter first notices it.
+      ensureStampPictureDecoded(hash);
       _stamps.add(
         PdfStampAnnotation(
           id: id,
@@ -874,7 +947,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (state.handle != PdfAnnotationHandle.body) return;
     final newRect = state.originalRect.shift(cumulativeDeltaPdf);
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
-    _stampDragTick.value++;
+    _bumpStampDrag();
   }
 
   /// Translate the selected stamp by [cumulativeDeltaViewer] expressed
@@ -918,7 +991,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _replaceSelectedStamp(
       (s) => s.copyWith(pageIndex: targetPageIdx, rectInPdfSpace: newPdfRect, updatedAt: _defaultClock()),
     );
-    _stampDragTick.value++;
+    _bumpStampDrag();
   }
 
   Rect _pdfRectToViewer(Rect pdfRect, _PageLayoutInfo info) {
@@ -973,7 +1046,7 @@ class PdfAnnotationController extends ChangeNotifier {
     );
 
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
-    _stampDragTick.value++;
+    _bumpStampDrag();
   }
 
   /// Set the selected stamp's rotation to [absoluteAngleDeg] (degrees,
@@ -984,6 +1057,27 @@ class PdfAnnotationController extends ChangeNotifier {
     if (state == null) return;
     if (state.handle != PdfAnnotationHandle.rotation) return;
     _replaceSelectedStamp((s) => s.copyWith(rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()));
+    _bumpStampDrag();
+  }
+
+  /// Every committed-content mutation in this class ends in a
+  /// [notifyListeners], so dropping the cached per-page paint sequences
+  /// here catches all of them, including any added later.
+  ///
+  /// The in-flight tick is deliberately *not* routed through this: an
+  /// in-flight stroke is painted outside the sequence, so a pointer
+  /// sample must not cost a re-sort.
+  @override
+  void notifyListeners() {
+    _paintSequences.clear();
+    super.notifyListeners();
+  }
+
+  /// Signals a live drag delta. Stamps are painted from the cached
+  /// sequence, which holds the pre-drag geometry, so the cache has to go
+  /// even though no listener on [notifyListeners] fires.
+  void _bumpStampDrag() {
+    _paintSequences.clear();
     _stampDragTick.value++;
   }
 
@@ -1032,6 +1126,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _selectedStampId.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
+    _stampPictures.dispose();
     super.dispose();
   }
 }
