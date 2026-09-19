@@ -193,7 +193,7 @@ void main() {
     _placeAt(controller, id: 'a');
     await _pumpLayer(tester, controller);
 
-    final selectionFinder = find.byKey(const Key('stampSelection:a'));
+    final selectionFinder = find.byKey(const Key('annotationSelection:a'));
     expect(selectionFinder, findsNothing);
 
     final layerCenter = tester.getCenter(find.byKey(const Key('layerHost')));

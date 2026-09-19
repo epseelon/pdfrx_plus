@@ -8,6 +8,7 @@ import 'package:pdfrx_engine/pdfrx_engine.dart';
 import '../pdf_document_ref.dart';
 import '../utils/fixed_overscroll_physics.dart';
 import '../utils/platform.dart';
+import 'annotations/pdf_annotation_overlay_labels.dart';
 import 'annotations/pdf_stamp_definition.dart';
 import 'pdf_page_layout.dart';
 import 'pdf_viewer.dart';
@@ -103,6 +104,7 @@ class PdfViewerParams {
     this.stampImageBuilder,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
+    this.annotationOverlayLabels = const PdfAnnotationOverlayLabels(),
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
     this.interactionDelegateProvider = const PdfViewerScrollInteractionDelegateProviderInstant(),
@@ -731,6 +733,14 @@ class PdfViewerParams {
   /// bounds).
   final double selectedStampPadding;
 
+  /// Strings used by the annotation selection overlay: the rotation
+  /// control, the delete control, and the eight resize handles.
+  ///
+  /// They serve every affordance's [Semantics] label, plus the delete
+  /// control's visible tooltip. Defaults to English, so an integrator
+  /// that does not localise needs no wiring.
+  final PdfAnnotationOverlayLabels annotationOverlayLabels;
+
   /// Scroll physics for the viewer.
   ///
   /// If null, default InteractiveViewer physics is used on all platforms. This physics clamps to boundaries,
@@ -851,6 +861,7 @@ class PdfViewerParams {
         other.stampImageBuilder != stampImageBuilder ||
         other.selectedStampInterfaceColor != selectedStampInterfaceColor ||
         other.selectedStampPadding != selectedStampPadding ||
+        other.annotationOverlayLabels != annotationOverlayLabels ||
         other.scrollPhysics != scrollPhysics ||
         other.interactionDelegateProvider != interactionDelegateProvider ||
         other.sizeDelegateProvider != sizeDelegateProvider ||
@@ -932,6 +943,7 @@ class PdfViewerParams {
         other.stampImageBuilder == stampImageBuilder &&
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.selectedStampPadding == selectedStampPadding &&
+        other.annotationOverlayLabels == annotationOverlayLabels &&
         other.scrollPhysics == scrollPhysics &&
         other.interactionDelegateProvider == interactionDelegateProvider &&
         other.sizeDelegateProvider == sizeDelegateProvider &&
@@ -1011,6 +1023,7 @@ class PdfViewerParams {
         stampImageBuilder.hashCode ^
         selectedStampInterfaceColor.hashCode ^
         selectedStampPadding.hashCode ^
+        annotationOverlayLabels.hashCode ^
         scrollPhysics.hashCode ^
         interactionDelegateProvider.hashCode ^
         sizeDelegateProvider.hashCode ^

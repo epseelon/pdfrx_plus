@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -5,6 +6,28 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_annotation_controller.dart';
 
 const _pageSize = Size(200, 200);
+
+/// Where [localPoint] of [rect] is drawn on screen once the shape is
+/// turned [rotationDeg] degrees counter-clockwise about its centre.
+///
+/// Deliberately hand-rolled rather than borrowing the geometry module's
+/// own helpers, so these assertions are an independent check on it.
+Offset _onScreen(Rect rect, double rotationDeg, Offset localPoint) {
+  final theta = -rotationDeg * math.pi / 180.0;
+  final v = localPoint - rect.center;
+  return rect.center +
+      Offset(
+        v.dx * math.cos(theta) - v.dy * math.sin(theta),
+        v.dx * math.sin(theta) + v.dy * math.cos(theta),
+      );
+}
+
+/// Rotates the selected stamp to [deg] through a complete drag.
+void _rotateTo(PdfAnnotationController controller, double deg) {
+  controller.beginStampDrag(PdfAnnotationHandle.rotation);
+  controller.applyStampRotate(deg);
+  controller.endStampDrag();
+}
 
 PdfAnnotationController _makeController({String? creator = 'alice'}) {
   final controller = PdfAnnotationController();
@@ -156,6 +179,55 @@ void main() {
       expect(after.width / after.height, isNot(closeTo(orig.width / orig.height, 1e-9)));
     });
 
+    test('on a rotated stamp the opposite corner stays fixed on screen', () {
+      final controller = _makeController();
+      addTearDown(controller.dispose);
+      _placeAt(controller, id: 'a');
+      controller.selectStamp('a');
+      _rotateTo(controller, 45);
+
+      final orig = controller.stamps.single.rectInPdfSpace;
+      final anchorBefore = _onScreen(orig, 45, orig.topLeft);
+
+      controller.beginStampDrag(PdfAnnotationHandle.bottomRight);
+      controller.applyStampResize(const Offset(10, -6));
+      controller.endStampDrag();
+
+      final after = controller.stamps.single.rectInPdfSpace;
+      expect(controller.stamps.single.rotationDeg, 45);
+      // Guard against a vacuous pass: the drag really did resize.
+      expect(after.width, isNot(closeTo(orig.width, 1e-6)));
+
+      final anchorAfter = _onScreen(after, 45, after.topLeft);
+      expect(anchorAfter.dx, closeTo(anchorBefore.dx, 1e-9));
+      expect(anchorAfter.dy, closeTo(anchorBefore.dy, 1e-9));
+    });
+
+    test('on a rotated stamp an edge drag stays fixed on the opposite edge', () {
+      final controller = _makeController();
+      addTearDown(controller.dispose);
+      _placeAt(controller, id: 'a');
+      controller.selectStamp('a');
+      _rotateTo(controller, 90);
+
+      final orig = controller.stamps.single.rectInPdfSpace;
+      final anchorBefore = _onScreen(orig, 90, Offset(orig.left, orig.center.dy));
+
+      // At 90° the stamp's own +x axis points up the screen, so this is
+      // the drag that widens it along that axis.
+      controller.beginStampDrag(PdfAnnotationHandle.right);
+      controller.applyStampResize(const Offset(0, -12));
+      controller.endStampDrag();
+
+      final after = controller.stamps.single.rectInPdfSpace;
+      expect(after.width, closeTo(orig.width + 12, 1e-9));
+      expect(after.height, closeTo(orig.height, 1e-9));
+
+      final anchorAfter = _onScreen(after, 90, Offset(after.left, after.center.dy));
+      expect(anchorAfter.dx, closeTo(anchorBefore.dx, 1e-9));
+      expect(anchorAfter.dy, closeTo(anchorBefore.dy, 1e-9));
+    });
+
     test('clamps bbox to a minimum size of 8 PDF points', () {
       final controller = _makeController();
       addTearDown(controller.dispose);
@@ -195,6 +267,34 @@ void main() {
 
       controller.undo();
       expect(controller.stamps.single.rotationDeg, 0);
+    });
+
+    test('rotation turns the stamp about its centre without moving its bbox', () {
+      // The anchoring in applyStampResize rests on this: rotation is
+      // about the centre, so the bbox the gizmo is derived from must
+      // come out of a rotate drag untouched.
+      final controller = _makeController();
+      addTearDown(controller.dispose);
+      _placeAt(controller, id: 'a');
+      controller.selectStamp('a');
+
+      final before = controller.stamps.single.rectInPdfSpace;
+      _rotateTo(controller, 137);
+
+      final after = controller.stamps.single.rectInPdfSpace;
+      expect(after, before);
+
+      // Every corner is drawn exactly where turning it about that
+      // unchanged centre puts it.
+      for (final corner in <Offset>[before.topLeft, before.topRight, before.bottomRight, before.bottomLeft]) {
+        final drawn = _onScreen(after, 137, corner);
+        final expected = _onScreen(before, 137, corner);
+        expect(drawn.dx, closeTo(expected.dx, 1e-9));
+        expect(drawn.dy, closeTo(expected.dy, 1e-9));
+      }
+      // A 137° turn genuinely moves the corners off their unrotated
+      // positions, so the loop above is not asserting nothing.
+      expect(_onScreen(after, 137, before.topLeft).dx, isNot(closeTo(before.topLeft.dx, 1e-6)));
     });
   });
 

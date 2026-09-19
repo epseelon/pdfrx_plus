@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
 import 'pdf_annotation_controller.dart';
+import 'pdf_annotation_overlay_labels.dart';
 import 'pdf_ink_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
+import 'selection_geometry.dart';
 
 /// Internal per-page widget that paints all [PdfInkAnnotation]s and
 /// [PdfStampAnnotation]s anchored to [page]. Mounted by `PdfViewer` for
@@ -38,6 +40,7 @@ class PdfAnnotationLayer extends StatefulWidget {
     this.stampImageBuilder,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
+    this.labels = const PdfAnnotationOverlayLabels(),
     super.key,
   });
 
@@ -68,6 +71,11 @@ class PdfAnnotationLayer extends StatefulWidget {
   /// placeholder; placement gestures still work for testing.
   final PdfStampImageBuilder? stampImageBuilder;
 
+  /// Strings for the selection overlay's affordances. Sourced by the
+  /// `PdfViewer` from `PdfViewerParams.annotationOverlayLabels`;
+  /// defaults to English.
+  final PdfAnnotationOverlayLabels labels;
+
   @override
   State<PdfAnnotationLayer> createState() => _PdfAnnotationLayerState();
 }
@@ -82,6 +90,9 @@ const double _kHandleHitRadiusPx = 22.0;
 // small). Sized larger than the resize handles to fit a rotation icon.
 const double _kRotateHandlePx = 24.0;
 const double _kRotateHandleGapPx = 8.0;
+// Distance from the top edge to the rotation handle's *centre*. The
+// geometry module places and hit-tests the handle from this.
+const double _kRotateHandleOffsetPx = _kRotateHandleGapPx + _kRotateHandlePx / 2;
 // Delete button floats at the top-right corner of the bbox (offset
 // outward by the same gap as the rotation handle) so it never hides
 // the stamp content.
@@ -98,9 +109,9 @@ const double _kStampDragSlopPx = 4.0;
 class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   // Drag bookkeeping captured at pointer-down so subsequent updates can
   // be routed without re-hit-testing.
-  PdfStampHandle? _activeHandle;
+  PdfAnnotationHandle? _activeHandle;
   Offset? _pointerDownLocal;
-  PdfStampHandle? _pendingHandle;
+  PdfAnnotationHandle? _pendingHandle;
   bool _dragRecognized = false;
   Offset? _stampCenterLocal;
   double? _initialRotationAngle;
@@ -253,7 +264,12 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       // the Listener below, which routes them based on
                       // our own hit-tests in page-local space (so handles
                       // floating outside the bbox still receive input).
-                      if (selectedStamp != null) _buildSelectionOverlay(selectedStamp),
+                      if (selectedStamp != null)
+                        _buildSelectionOverlay(
+                          id: selectedStamp.id,
+                          selectionRect: _stampSelectionRect(selectedStamp),
+                          rotationDeg: selectedStamp.rotationDeg,
+                        ),
                     ],
                   );
                 },
@@ -282,155 +298,139 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     return builder(context, attachment.bytes, stamp.contentType, displaySize);
   }
 
-  Widget _buildSelectionOverlay(PdfStampAnnotation stamp) {
-    final selectionRect = _stampSelectionRect(stamp);
-    final left = selectionRect.left;
-    final top = selectionRect.top;
-    final width = selectionRect.width;
-    final height = selectionRect.height;
+  /// The shape-neutral selection gizmo: an outline, eight resize
+  /// handles, a rotation handle and a delete button, all turned by
+  /// [rotationDeg] about the shape's centre so they sit on its rotated
+  /// borders.
+  ///
+  /// Rendered above the input handler but fully pointer-transparent:
+  /// every affordance is purely visual. Taps and drags fall through to
+  /// the [Listener] below, which routes them from this layer's own
+  /// hit-tests in page-local space, so handles floating outside the
+  /// bbox still receive input.
+  Widget _buildSelectionOverlay({required String id, required Rect selectionRect, required double rotationDeg}) {
     final color = widget.selectedStampInterfaceColor ?? Theme.of(context).colorScheme.primary;
     final iconColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
+    final labels = widget.labels;
+    // Affordances are laid out in the shape's own frame, with the
+    // Transform below turning the whole group; this is the same frame
+    // the hit-tests un-rotate the pointer into.
+    final localRect = Offset.zero & selectionRect.size;
+    final rotationAnchor = handleAnchorInLocalFrame(
+      rect: localRect,
+      handle: PdfAnnotationHandle.rotation,
+      rotationHandleOffset: _kRotateHandleOffsetPx,
+    );
+    final deleteRect = _deleteButtonRectInLocalFrame(localRect);
 
     return Positioned(
-      key: Key('stampSelection:${stamp.id}'),
-      left: left,
-      top: top,
-      width: width,
-      height: height,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          // Outline + resize/rotation handles render visually only —
-          // pointer-transparent so the Listener below catches drags.
-          IgnorePointer(
-            child: SizedBox(
-              width: width,
-              height: height,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: color, width: _kSelectionOutlinePx),
-                      ),
-                    ),
+      key: Key('annotationSelection:$id'),
+      left: selectionRect.left,
+      top: selectionRect.top,
+      width: selectionRect.width,
+      height: selectionRect.height,
+      child: IgnorePointer(
+        child: Transform.rotate(
+          angle: -rotationDeg * math.pi / 180.0,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: color, width: _kSelectionOutlinePx),
                   ),
-                  for (final handle in _resizeHandles)
-                    Positioned(
-                      left: _handleX(handle, width) - _kHandleScreenPx / 2,
-                      top: _handleY(handle, height) - _kHandleScreenPx / 2,
-                      width: _kHandleScreenPx,
-                      height: _kHandleScreenPx,
-                      child: Semantics(
-                        label: 'Resize ${_handleLabel(handle)}',
-                        button: true,
-                        child: DecoratedBox(decoration: BoxDecoration(color: color)),
-                      ),
-                    ),
-                  Positioned(
-                    left: width / 2 - _kRotateHandlePx / 2,
-                    top: -(_kRotateHandleGapPx + _kRotateHandlePx),
-                    width: _kRotateHandlePx,
-                    height: _kRotateHandlePx,
-                    child: Semantics(
-                      label: 'Rotate stamp',
-                      button: true,
-                      child: Material(
-                        color: color,
-                        shape: const CircleBorder(),
-                        elevation: 2,
-                        child: Icon(Icons.refresh, size: 16, color: iconColor),
-                      ),
-                    ),
-                  ),
-                  // Delete button. Floats outside the bbox at the
-                  // top-right corner — diagonally offset from the
-                  // top-right resize handle so fingers reaching the
-                  // corner still hit the resize handle. Pointer events
-                  // fall through to the Listener (IgnorePointer wraps
-                  // the whole affordance group); the actual tap-test
-                  // for this button lives in _handleStampTap so the
-                  // tap path is uniform across all the stamp tool's
-                  // affordances.
-                  Positioned(
-                    left: width + _kRotateHandleGapPx,
-                    top: -(_kRotateHandleGapPx + _kDeleteButtonPx),
-                    width: _kDeleteButtonPx,
-                    height: _kDeleteButtonPx,
-                    child: Semantics(
-                      label: 'Delete stamp',
-                      button: true,
-                      child: Material(
-                        color: color,
-                        shape: const CircleBorder(),
-                        elevation: 2,
-                        child: Tooltip(
-                          message: 'Delete stamp',
-                          child: Icon(Icons.delete_outline, size: 16, color: iconColor),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
+              for (final handle in kResizeHandles)
+                () {
+                  final anchor = handleAnchorInLocalFrame(
+                    rect: localRect,
+                    handle: handle,
+                    rotationHandleOffset: _kRotateHandleOffsetPx,
+                  );
+                  return Positioned(
+                    left: anchor.dx - _kHandleScreenPx / 2,
+                    top: anchor.dy - _kHandleScreenPx / 2,
+                    width: _kHandleScreenPx,
+                    height: _kHandleScreenPx,
+                    child: Semantics(
+                      label: labels.labelFor(handle),
+                      button: true,
+                      child: DecoratedBox(decoration: BoxDecoration(color: color)),
+                    ),
+                  );
+                }(),
+              Positioned(
+                left: rotationAnchor.dx - _kRotateHandlePx / 2,
+                top: rotationAnchor.dy - _kRotateHandlePx / 2,
+                width: _kRotateHandlePx,
+                height: _kRotateHandlePx,
+                child: Semantics(
+                  label: labels.rotate,
+                  button: true,
+                  child: Material(
+                    color: color,
+                    shape: const CircleBorder(),
+                    elevation: 2,
+                    child: _upright(rotationDeg, Icon(Icons.refresh, size: 16, color: iconColor)),
+                  ),
+                ),
+              ),
+              // Delete button. Floats outside the bbox at the top-right
+              // corner, diagonally offset from the top-right resize
+              // handle so fingers reaching the corner still hit the
+              // resize handle. Pointer events fall through to the
+              // Listener (the whole group is wrapped in IgnorePointer);
+              // the tap-test lives in _handleStampTap so the tap path
+              // is uniform across all the stamp tool's affordances.
+              Positioned(
+                left: deleteRect.left,
+                top: deleteRect.top,
+                width: deleteRect.width,
+                height: deleteRect.height,
+                child: Semantics(
+                  label: labels.delete,
+                  button: true,
+                  child: Material(
+                    color: color,
+                    shape: const CircleBorder(),
+                    elevation: 2,
+                    child: Tooltip(
+                      message: labels.delete,
+                      child: _upright(rotationDeg, Icon(Icons.delete_outline, size: 16, color: iconColor)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  static const _resizeHandles = <PdfStampHandle>[
-    PdfStampHandle.topLeft,
-    PdfStampHandle.top,
-    PdfStampHandle.topRight,
-    PdfStampHandle.right,
-    PdfStampHandle.bottomRight,
-    PdfStampHandle.bottom,
-    PdfStampHandle.bottomLeft,
-    PdfStampHandle.left,
-  ];
+  /// Counter-rotates [child] so a glyph stays readable while its
+  /// position travels with the rotated gizmo.
+  Widget _upright(double rotationDeg, Widget child) =>
+      rotationDeg == 0 ? child : Transform.rotate(angle: rotationDeg * math.pi / 180.0, child: child);
 
-  String _handleLabel(PdfStampHandle h) => switch (h) {
-    PdfStampHandle.topLeft => 'top-left',
-    PdfStampHandle.top => 'top',
-    PdfStampHandle.topRight => 'top-right',
-    PdfStampHandle.right => 'right',
-    PdfStampHandle.bottomRight => 'bottom-right',
-    PdfStampHandle.bottom => 'bottom',
-    PdfStampHandle.bottomLeft => 'bottom-left',
-    PdfStampHandle.left => 'left',
-    PdfStampHandle.body => 'body',
-    PdfStampHandle.rotation => 'rotation',
-  };
+  /// Local-frame rect of the floating delete button, just outside the
+  /// selection rect's top-right corner. Serves both the visual and the
+  /// tap hit-test, which un-rotates the pointer into this same frame.
+  Rect _deleteButtonRectInLocalFrame(Rect selectionRect) => Rect.fromLTWH(
+    selectionRect.right + _kRotateHandleGapPx,
+    selectionRect.top - _kRotateHandleGapPx - _kDeleteButtonPx,
+    _kDeleteButtonPx,
+    _kDeleteButtonPx,
+  );
 
-  double _handleX(PdfStampHandle h, double width) => switch (h) {
-    PdfStampHandle.topLeft || PdfStampHandle.left || PdfStampHandle.bottomLeft => 0,
-    PdfStampHandle.top || PdfStampHandle.bottom => width / 2,
-    PdfStampHandle.topRight || PdfStampHandle.right || PdfStampHandle.bottomRight => width,
-    _ => width / 2,
-  };
-
-  double _handleY(PdfStampHandle h, double height) => switch (h) {
-    PdfStampHandle.topLeft || PdfStampHandle.top || PdfStampHandle.topRight => 0,
-    PdfStampHandle.left || PdfStampHandle.right => height / 2,
-    PdfStampHandle.bottomLeft || PdfStampHandle.bottom || PdfStampHandle.bottomRight => height,
-    _ => height / 2,
-  };
-
-  /// Local-coord rect of the floating delete button for [stamp]. Sits
-  /// just outside the bbox at the top-right corner. Used for tap
-  /// hit-testing only — the visual is rendered as a pointer-transparent
-  /// affordance.
-  Rect _stampDeleteButtonRect(PdfStampAnnotation stamp) {
-    final bbox = _stampSelectionRect(stamp);
-    return Rect.fromLTWH(
-      bbox.right + _kRotateHandleGapPx,
-      bbox.top - _kRotateHandleGapPx - _kDeleteButtonPx,
-      _kDeleteButtonPx,
-      _kDeleteButtonPx,
-    );
+  /// Whether [local] (page-local pixels) falls on [stamp]'s delete
+  /// button once the stamp is rotated.
+  bool _hitTestDeleteButton(PdfStampAnnotation stamp, Offset local) {
+    final selectionRect = _stampSelectionRect(stamp);
+    final unrotated = unrotatePointToLocal(local, center: selectionRect.center, rotationDeg: stamp.rotationDeg);
+    return _deleteButtonRectInLocalFrame(selectionRect).contains(unrotated);
   }
 
   Rect _stampLocalRect(PdfStampAnnotation stamp) {
@@ -444,63 +444,60 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     );
   }
 
-  /// The handle rectangle for [stamp]: its symbol rect inflated on every
-  /// side by [PdfAnnotationLayer.selectedStampPadding] (screen pixels).
-  /// The selection outline, resize/rotation handles, delete button, and
+  /// The handle rectangle for a shape whose own bounds are [localRect]:
+  /// that rect inflated on every side by [padding] (screen pixels). The
+  /// selection outline, resize/rotation handles, delete button, and
   /// every body/selection hit-test derive from this rect — the rendered
-  /// symbol itself stays at [_stampLocalRect]. With a `0.0` padding the
-  /// two rects are identical (exact-fit handle box).
-  Rect _stampSelectionRect(PdfStampAnnotation stamp) => _stampLocalRect(stamp).inflate(widget.selectedStampPadding);
+  /// shape itself stays at [localRect].
+  ///
+  /// Padding is a per-kind choice, which is why it is a parameter
+  /// rather than read from the widget here: stamps pass
+  /// [PdfAnnotationLayer.selectedStampPadding] so the handles clear the
+  /// symbol, while a `0.0` padding makes the two rects identical
+  /// (exact-fit handle box), which is what the rectangle tool passes,
+  /// so its handles sit exactly on the border.
+  Rect _selectionRect(Rect localRect, double padding) => localRect.inflate(padding);
+
+  /// The handle rectangle for [stamp].
+  Rect _stampSelectionRect(PdfStampAnnotation stamp) =>
+      _selectionRect(_stampLocalRect(stamp), widget.selectedStampPadding);
 
   /// Returns the closest handle of [stamp] to [local], or `null` if no
-  /// handle is within hit radius. When [local] falls inside the bbox
-  /// without hitting any handle, returns [PdfStampHandle.body]. Closest
-  /// wins over priority order so e.g. the top-edge midpoint beats the
-  /// rotation handle when the user taps right at the edge.
-  PdfStampHandle? _hitTestStampHandles(PdfStampAnnotation stamp, Offset local) {
-    final rect = _stampSelectionRect(stamp);
-    PdfStampHandle? bestHandle;
-    var bestDistSq = _kHandleHitRadiusPx * _kHandleHitRadiusPx;
+  /// handle is within hit radius. When [local] falls inside the rotated
+  /// bbox without hitting any handle, returns [PdfAnnotationHandle.body].
+  /// Closest wins over priority order so e.g. the top-edge midpoint beats
+  /// the rotation handle when the user taps right at the edge.
+  PdfAnnotationHandle? _hitTestStampHandles(PdfStampAnnotation stamp, Offset local) => hitTestHandles(
+    rect: _stampSelectionRect(stamp),
+    rotationDeg: stamp.rotationDeg,
+    point: local,
+    hitRadius: _kHandleHitRadiusPx,
+    rotationHandleOffset: _kRotateHandleOffsetPx,
+  );
 
-    void consider(PdfStampHandle h, Offset pos) {
-      final dx = local.dx - pos.dx;
-      final dy = local.dy - pos.dy;
-      final d2 = dx * dx + dy * dy;
-      if (d2 <= bestDistSq) {
-        bestHandle = h;
-        bestDistSq = d2;
-      }
-    }
-
-    for (final h in _resizeHandles) {
-      consider(h, Offset(rect.left + _handleX(h, rect.width), rect.top + _handleY(h, rect.height)));
-    }
-    consider(PdfStampHandle.rotation, Offset(rect.center.dx, rect.top - _kRotateHandleGapPx - _kRotateHandlePx / 2));
-
-    if (bestHandle != null) return bestHandle;
-    if (rect.contains(local)) return PdfStampHandle.body;
-    return null;
-  }
+  /// Whether [local] falls inside [stamp]'s rotated selection rect.
+  bool _stampBodyContains(PdfStampAnnotation stamp, Offset local) =>
+      containsRotated(rect: _stampSelectionRect(stamp), rotationDeg: stamp.rotationDeg, point: local);
 
   /// Returns the topmost selectable stamp (current creator's) whose
-  /// rect contains [local], or null. Iterates in reverse Z-order so the
-  /// most recently placed stamp wins overlap resolution.
+  /// rotated rect contains [local], or null. Iterates in reverse Z-order
+  /// so the most recently placed stamp wins overlap resolution.
   PdfStampAnnotation? _hitTestSelectableStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
     for (var i = pageStamps.length - 1; i >= 0; i--) {
       final s = pageStamps[i];
       if (s.creatorName != _controller.currentCreator) continue;
-      if (_stampSelectionRect(s).contains(local)) return s;
+      if (_stampBodyContains(s, local)) return s;
     }
     return null;
   }
 
-  /// Returns the first stamp (any creator) whose rect contains the
-  /// local point — used purely to decide whether to fall through to
+  /// Returns the first stamp (any creator) whose rotated rect contains
+  /// the local point, used purely to decide whether to fall through to
   /// placement (only when the topmost stamp is foreign-creator).
   PdfStampAnnotation? _hitTestAnyStampBody(List<PdfStampAnnotation> pageStamps, Offset local) {
     for (var i = pageStamps.length - 1; i >= 0; i--) {
       final s = pageStamps[i];
-      if (_stampSelectionRect(s).contains(local)) return s;
+      if (_stampBodyContains(s, local)) return s;
     }
     return null;
   }
@@ -522,7 +519,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     final hit = _hitTestStampHandles(selected, local);
     if (hit == null) return;
     _pendingHandle = hit;
-    if (hit == PdfStampHandle.rotation) {
+    if (hit == PdfAnnotationHandle.rotation) {
       final rect = _stampLocalRect(selected);
       _stampCenterLocal = rect.center;
       _initialRotationAngle = math.atan2(local.dy - rect.center.dy, local.dx - rect.center.dx);
@@ -553,7 +550,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     final handle = _activeHandle;
     if (handle == null) return;
 
-    if (handle == PdfStampHandle.rotation) {
+    if (handle == PdfAnnotationHandle.rotation) {
       final center = _stampCenterLocal!;
       final initial = _initialRotationAngle!;
       final current = math.atan2(local.dy - center.dy, local.dx - center.dx);
@@ -564,7 +561,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       return;
     }
 
-    if (handle == PdfStampHandle.body) {
+    if (handle == PdfAnnotationHandle.body) {
       // Body drag works in viewer-pixel space so cross-page page
       // reassignment can hand off the stamp to a sibling annotation
       // layer mid-drag. The Listener is mounted on a Positioned at
@@ -613,7 +610,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     final selectedId = _controller.selectedStampIdListenable.value;
     if (selectedId != null) {
       final selectedStamp = _findSelected(pageStamps, selectedId);
-      if (selectedStamp != null && _stampDeleteButtonRect(selectedStamp).contains(local)) {
+      if (selectedStamp != null && _hitTestDeleteButton(selectedStamp, local)) {
         _controller.deleteStamp(selectedStamp.id);
         return;
       }

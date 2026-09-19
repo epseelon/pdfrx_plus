@@ -94,19 +94,19 @@ void main() {
 
       // Sanity: at start the stamp lives on page 0 (left layer).
       expect(controller.stamps.single.pageIndex, 0);
-      expect(find.byKey(const Key('stampSelection:a')), findsOneWidget);
+      expect(find.byKey(const Key('annotationSelection:a')), findsOneWidget);
 
       // Drive a body drag entirely through the controller (the layer
       // wires the same call from real touch input). 200 viewer pixels to
       // the right lands the centroid in page 1's viewer rect.
-      controller.beginStampDrag(PdfStampHandle.body);
+      controller.beginStampDrag(PdfAnnotationHandle.body);
       controller.applyStampMoveViewer(const Offset(200, 0));
       controller.endStampDrag();
       await tester.pump();
 
       expect(controller.stamps.single.pageIndex, 1);
       // The selection overlay key now lives in layer B.
-      expect(find.byKey(const Key('stampSelection:a')), findsOneWidget);
+      expect(find.byKey(const Key('annotationSelection:a')), findsOneWidget);
 
       // Tap somewhere on layer B (the right half of the viewer). The
       // controller should keep the selection (or re-select).

@@ -8,6 +8,9 @@ import 'instant_json.dart';
 import 'pdf_ink_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
+import 'selection_geometry.dart';
+
+export 'selection_geometry.dart' show PdfAnnotationHandle, kMinAnnotationSizePts;
 
 /// Active annotation tool while [PdfAnnotationController.annotationModeListenable]
 /// is `true`.
@@ -35,44 +38,16 @@ enum PdfAnnotationTool {
   hand,
 }
 
-/// Active drag affordance on the currently-selected stamp. The annotation
-/// layer captures one of these at pan-start and uses it to dispatch
-/// subsequent updates to the corresponding controller mutator.
-enum PdfStampHandle {
-  /// Drag the stamp body to translate it.
-  body,
+/// Legacy alias for [PdfAnnotationHandle], kept so the fork stays
+/// mergeable with upstream pdfrx. The gizmo is shape-neutral now: the
+/// same handles serve stamps and rectangles.
+@Deprecated('Renamed to PdfAnnotationHandle now that the gizmo serves every annotation kind.')
+typedef PdfStampHandle = PdfAnnotationHandle;
 
-  /// Drag the rotation handle (small circle inset below the top edge).
-  rotation,
-
-  /// Resize from the top-left corner.
-  topLeft,
-
-  /// Resize from the top edge midpoint (vertical-only).
-  top,
-
-  /// Resize from the top-right corner.
-  topRight,
-
-  /// Resize from the right edge midpoint (horizontal-only).
-  right,
-
-  /// Resize from the bottom-right corner.
-  bottomRight,
-
-  /// Resize from the bottom edge midpoint (vertical-only).
-  bottom,
-
-  /// Resize from the bottom-left corner.
-  bottomLeft,
-
-  /// Resize from the left edge midpoint (horizontal-only).
-  left,
-}
-
-/// Minimum stamp width/height (PDF points) clamped during resize so the
-/// affordances stay tappable.
-const double kMinStampSizePts = 8.0;
+/// Legacy alias for [kMinAnnotationSizePts], kept so the fork stays
+/// mergeable with upstream pdfrx.
+@Deprecated('Renamed to kMinAnnotationSizePts now that the clamp serves every annotation kind.')
+const double kMinStampSizePts = kMinAnnotationSizePts;
 
 /// Internal annotation state for a `PdfViewer`. Owns the list of strokes,
 /// the annotation-mode flag, and the in-flight stroke buffer.
@@ -868,7 +843,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// No-op when no stamp is selected, the selected stamp is owned by a
   /// different creator (foreign-creator protection), or a drag is
   /// already in progress.
-  void beginStampDrag(PdfStampHandle handle) {
+  void beginStampDrag(PdfAnnotationHandle handle) {
     if (_stampDragState != null) return;
     final id = _selectedStampId.value;
     if (id == null) return;
@@ -896,7 +871,7 @@ class PdfAnnotationController extends ChangeNotifier {
   void applyStampMove(Offset cumulativeDeltaPdf) {
     final state = _stampDragState;
     if (state == null) return;
-    if (state.handle != PdfStampHandle.body) return;
+    if (state.handle != PdfAnnotationHandle.body) return;
     final newRect = state.originalRect.shift(cumulativeDeltaPdf);
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
     _stampDragTick.value++;
@@ -915,12 +890,12 @@ class PdfAnnotationController extends ChangeNotifier {
   /// space, preserving its visible pixel size.
   ///
   /// No-op when no drag is in progress, the active handle isn't
-  /// [PdfStampHandle.body], or the original page's layout is no longer
+  /// [PdfAnnotationHandle.body], or the original page's layout is no longer
   /// registered.
   void applyStampMoveViewer(Offset cumulativeDeltaViewer) {
     final state = _stampDragState;
     if (state == null) return;
-    if (state.handle != PdfStampHandle.body) return;
+    if (state.handle != PdfAnnotationHandle.body) return;
 
     final origPageInfo = _pageLayouts[state.originalPageIndex];
     if (origPageInfo == null) return;
@@ -971,113 +946,34 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Resize the selected stamp's bbox by applying [cumulativeDeltaPdf]
   /// to the corner/edge captured at [beginStampDrag].
   ///
+  /// The delta arrives in screen-axis PDF space and is projected into
+  /// the stamp's own frame by [resizeInLocalFrame], so pulling the
+  /// right handle of a rotated stamp widens it along its own axis and
+  /// the opposite corner or edge stays fixed on screen.
+  ///
   /// Corner handles preserve the bbox's aspect ratio at drag-start —
   /// the dominant axis (the one the cursor pulls further in proportion
   /// to its original size) drives a uniform scale; the opposite corner
   /// anchors. Edge handles stretch a single axis. Both modes clamp each
-  /// axis to [kMinStampSizePts]. Bumps [stampDragChangedListenable].
+  /// axis to [kMinAnnotationSizePts]. Bumps [stampDragChangedListenable].
   void applyStampResize(Offset cumulativeDeltaPdf) {
     final state = _stampDragState;
     if (state == null) return;
     final handle = state.handle;
-    if (handle == PdfStampHandle.body || handle == PdfStampHandle.rotation) return;
+    if (handle == PdfAnnotationHandle.body || handle == PdfAnnotationHandle.rotation) return;
 
-    final orig = state.originalRect;
-    final dx = cumulativeDeltaPdf.dx;
-    final dy = cumulativeDeltaPdf.dy;
-
-    final newRect = _isCornerHandle(handle)
-        ? _resizeCornerLocked(orig: orig, handle: handle, dx: dx, dy: dy)
-        : _resizeEdge(orig: orig, handle: handle, dx: dx, dy: dy);
+    final newRect = resizeInLocalFrame(
+      originalRect: state.originalRect,
+      rotationDeg: state.originalRotation,
+      handle: handle,
+      delta: cumulativeDeltaPdf,
+      // Stamps keep their aspect lock on corner drags; rectangles do
+      // not (they pass `false`).
+      lockAspect: true,
+    );
 
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));
     _stampDragTick.value++;
-  }
-
-  static bool _isCornerHandle(PdfStampHandle h) =>
-      h == PdfStampHandle.topLeft ||
-      h == PdfStampHandle.topRight ||
-      h == PdfStampHandle.bottomLeft ||
-      h == PdfStampHandle.bottomRight;
-
-  Rect _resizeCornerLocked({
-    required Rect orig,
-    required PdfStampHandle handle,
-    required double dx,
-    required double dy,
-  }) {
-    // Per-axis candidate dims based on the raw cursor delta.
-    double candidateWidth;
-    double candidateHeight;
-    switch (handle) {
-      case PdfStampHandle.topLeft:
-        candidateWidth = orig.width - dx;
-        candidateHeight = orig.height - dy;
-      case PdfStampHandle.topRight:
-        candidateWidth = orig.width + dx;
-        candidateHeight = orig.height - dy;
-      case PdfStampHandle.bottomLeft:
-        candidateWidth = orig.width - dx;
-        candidateHeight = orig.height + dy;
-      case PdfStampHandle.bottomRight:
-        candidateWidth = orig.width + dx;
-        candidateHeight = orig.height + dy;
-      // ignore: no_default_cases
-      default:
-        candidateWidth = orig.width;
-        candidateHeight = orig.height;
-    }
-
-    // Pick the dominant axis by proportional change away from 1.0;
-    // the loser is recomputed from the original aspect ratio.
-    final scaleW = candidateWidth / orig.width;
-    final scaleH = candidateHeight / orig.height;
-    var scale = (scaleW - 1).abs() >= (scaleH - 1).abs() ? scaleW : scaleH;
-
-    // Min-size clamp respects aspect: pick the larger of the two
-    // axis-specific min scales so neither dim drops below the limit.
-    final minScale = math.max(kMinStampSizePts / orig.width, kMinStampSizePts / orig.height);
-    if (scale < minScale) scale = minScale;
-
-    final newWidth = orig.width * scale;
-    final newHeight = orig.height * scale;
-
-    // Anchor on the opposite corner.
-    switch (handle) {
-      case PdfStampHandle.topLeft:
-        return Rect.fromLTRB(orig.right - newWidth, orig.bottom - newHeight, orig.right, orig.bottom);
-      case PdfStampHandle.topRight:
-        return Rect.fromLTRB(orig.left, orig.bottom - newHeight, orig.left + newWidth, orig.bottom);
-      case PdfStampHandle.bottomLeft:
-        return Rect.fromLTRB(orig.right - newWidth, orig.top, orig.right, orig.top + newHeight);
-      case PdfStampHandle.bottomRight:
-        return Rect.fromLTRB(orig.left, orig.top, orig.left + newWidth, orig.top + newHeight);
-      // ignore: no_default_cases
-      default:
-        return orig;
-    }
-  }
-
-  Rect _resizeEdge({required Rect orig, required PdfStampHandle handle, required double dx, required double dy}) {
-    var left = orig.left;
-    var top = orig.top;
-    var right = orig.right;
-    var bottom = orig.bottom;
-
-    if (handle == PdfStampHandle.left) {
-      left = orig.left + dx;
-      if (right - left < kMinStampSizePts) left = right - kMinStampSizePts;
-    } else if (handle == PdfStampHandle.right) {
-      right = orig.right + dx;
-      if (right - left < kMinStampSizePts) right = left + kMinStampSizePts;
-    } else if (handle == PdfStampHandle.top) {
-      top = orig.top + dy;
-      if (bottom - top < kMinStampSizePts) top = bottom - kMinStampSizePts;
-    } else if (handle == PdfStampHandle.bottom) {
-      bottom = orig.bottom + dy;
-      if (bottom - top < kMinStampSizePts) bottom = top + kMinStampSizePts;
-    }
-    return Rect.fromLTRB(left, top, right, bottom);
   }
 
   /// Set the selected stamp's rotation to [absoluteAngleDeg] (degrees,
@@ -1086,7 +982,7 @@ class PdfAnnotationController extends ChangeNotifier {
   void applyStampRotate(double absoluteAngleDeg) {
     final state = _stampDragState;
     if (state == null) return;
-    if (state.handle != PdfStampHandle.rotation) return;
+    if (state.handle != PdfAnnotationHandle.rotation) return;
     _replaceSelectedStamp((s) => s.copyWith(rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()));
     _stampDragTick.value++;
   }
@@ -1201,7 +1097,7 @@ class _StampDragState {
   });
 
   final String stampId;
-  final PdfStampHandle handle;
+  final PdfAnnotationHandle handle;
   final Rect originalRect;
   final double originalRotation;
   final int originalPageIndex;

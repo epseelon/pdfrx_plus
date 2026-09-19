@@ -62,30 +62,30 @@ class _StampJourneyRobot {
     await tester.pumpAndSettle();
   }
 
-  Future<void> dragHandle(PdfStampHandle handle, Offset deltaPdf) async {
+  Future<void> dragHandle(PdfAnnotationHandle handle, Offset deltaPdf) async {
     final stamp = controller.stamps.firstWhere((s) => s.id == controller.selectedStampIdListenable.value);
     final rect = stamp.rectInPdfSpace;
     Offset start;
     switch (handle) {
-      case PdfStampHandle.body:
+      case PdfAnnotationHandle.body:
         start = rect.center;
-      case PdfStampHandle.topLeft:
+      case PdfAnnotationHandle.topLeft:
         start = rect.topLeft;
-      case PdfStampHandle.topRight:
+      case PdfAnnotationHandle.topRight:
         start = rect.topRight;
-      case PdfStampHandle.bottomRight:
+      case PdfAnnotationHandle.bottomRight:
         start = rect.bottomRight;
-      case PdfStampHandle.bottomLeft:
+      case PdfAnnotationHandle.bottomLeft:
         start = rect.bottomLeft;
-      case PdfStampHandle.top:
+      case PdfAnnotationHandle.top:
         start = Offset(rect.center.dx, rect.top);
-      case PdfStampHandle.bottom:
+      case PdfAnnotationHandle.bottom:
         start = Offset(rect.center.dx, rect.bottom);
-      case PdfStampHandle.left:
+      case PdfAnnotationHandle.left:
         start = Offset(rect.left, rect.center.dy);
-      case PdfStampHandle.right:
+      case PdfAnnotationHandle.right:
         start = Offset(rect.right, rect.center.dy);
-      case PdfStampHandle.rotation:
+      case PdfAnnotationHandle.rotation:
         // Rotation handle floats above the bbox top (gap + handle/2);
         // see _kRotateHandleGapPx + _kRotateHandlePx in pdf_annotation_layer.dart.
         start = Offset(rect.center.dx, rect.top - 20);
@@ -193,7 +193,7 @@ void main() {
     // unit tests (pdf_annotation_controller_stamp_drag_test) cover
     // the same code path with explicit cumulative deltas.
     final rectBefore = controller.stamps.single.rectInPdfSpace;
-    controller.beginStampDrag(PdfStampHandle.bottomRight);
+    controller.beginStampDrag(PdfAnnotationHandle.bottomRight);
     controller.applyStampResize(const Offset(10, 10));
     controller.endStampDrag();
     await tester.pumpAndSettle();
@@ -203,7 +203,7 @@ void main() {
 
     // Step 7: rotate.
     final rotBefore = controller.stamps.single.rotationDeg;
-    controller.beginStampDrag(PdfStampHandle.rotation);
+    controller.beginStampDrag(PdfAnnotationHandle.rotation);
     controller.applyStampRotate(45);
     controller.endStampDrag();
     await tester.pumpAndSettle();
