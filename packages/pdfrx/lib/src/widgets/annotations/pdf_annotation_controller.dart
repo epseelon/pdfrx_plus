@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'annotation_paint_sequence.dart';
 import 'instant_json.dart';
 import 'pdf_ink_annotation.dart';
+import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
 import 'pdf_stamp_picture.dart';
@@ -63,6 +64,7 @@ class PdfAnnotationController extends ChangeNotifier {
 
   final List<PdfInkAnnotation> _strokes = [];
   final List<PdfStampAnnotation> _stamps = [];
+  final List<PdfRectAnnotation> _rects = [];
   final Map<String, PdfStampAttachment> _attachments = {};
   final ValueNotifier<bool> _modeListenable = ValueNotifier<bool>(false);
   final ValueNotifier<int> _inFlightTick = ValueNotifier<int>(0);
@@ -238,6 +240,9 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Read-only view of the placed stamp annotations.
   List<PdfStampAnnotation> get stamps => List.unmodifiable(_stamps);
 
+  /// Read-only view of the placed rectangle annotations.
+  List<PdfRectAnnotation> get rects => List.unmodifiable(_rects);
+
   /// Read-only view of the attachment store (sha256 → bytes + content
   /// type). Bytes referenced by at least one stamp are emitted under
   /// the document's `attachments` map at export time.
@@ -373,12 +378,17 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replace strokes, stamps, and attachments in a single update.
-  /// History is cleared, listeners notified once.
+  /// Replace strokes, stamps, rectangles, and attachments in a single
+  /// update. History is cleared, listeners notified once.
+  ///
+  /// [rects] defaults to empty so call sites that predate rectangles keep
+  /// compiling; they then replace the rectangle set with nothing, which is
+  /// the right reading of a wholesale replacement.
   void setAllWithStamps({
     required List<PdfInkAnnotation> strokes,
     required List<PdfStampAnnotation> stamps,
     required Map<String, PdfStampAttachment> attachments,
+    List<PdfRectAnnotation> rects = const [],
   }) {
     _strokes
       ..clear()
@@ -386,6 +396,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _stamps
       ..clear()
       ..addAll(stamps);
+    _rects
+      ..clear()
+      ..addAll(rects);
     _attachments
       ..clear()
       ..addAll(attachments);
@@ -409,21 +422,33 @@ class PdfAnnotationController extends ChangeNotifier {
 
   Set<String> _referencedAttachmentShas() => _stamps.map((s) => s.attachmentSha256).toSet();
 
-  /// Remove all strokes, stamps, attachments, selection, and pending
-  /// stamp (the last reset matches the spec's `clearAnnotations`
+  /// Remove all strokes, stamps, rectangles, attachments, selection, and
+  /// pending stamp (the last reset matches the spec's `clearAnnotations`
   /// contract). No-op when everything is already empty / null.
+  ///
+  /// The viewer calls this on every document swap, so a rectangle list
+  /// left untouched here would paint the previous part's rectangles over
+  /// the newly opened score and export them into the wrong part.
   void clear() {
     final hadStrokes = _strokes.isNotEmpty;
     final hadStamps = _stamps.isNotEmpty;
+    final hadRects = _rects.isNotEmpty;
     final hadAttachments = _attachments.isNotEmpty;
     final hadSelection = _selectedStampId.value != null;
     final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
     final hadPictures = !_stampPictures.isEmpty;
-    if (!hadStrokes && !hadStamps && !hadAttachments && !hadSelection && !hadHistory && !hadPictures) {
+    if (!hadStrokes &&
+        !hadStamps &&
+        !hadRects &&
+        !hadAttachments &&
+        !hadSelection &&
+        !hadHistory &&
+        !hadPictures) {
       return;
     }
     _strokes.clear();
     _stamps.clear();
+    _rects.clear();
     _attachments.clear();
     // The viewer calls this on every document swap, so a cache left
     // undrained here leaks every picture decoded for the previous
@@ -450,18 +475,26 @@ class PdfAnnotationController extends ChangeNotifier {
       defaultColor: _strokeColor.value,
       defaultLineWidth: _strokeWidth.value,
     );
-    setAllWithStamps(strokes: decoded.strokes, stamps: decoded.stamps, attachments: decoded.attachments);
+    setAllWithStamps(
+      strokes: decoded.strokes,
+      stamps: decoded.stamps,
+      rects: decoded.rects,
+      attachments: decoded.attachments,
+    );
   }
 
-  /// Serialize all strokes (and stamps + attachments, if any) as an
-  /// Instant JSON document.
-  String exportJson() => encodeInstantJson(_strokes, stamps: _stamps, attachments: _attachments);
+  /// Serialize all strokes (and stamps, rectangles + attachments, if any)
+  /// as an Instant JSON document.
+  String exportJson() => encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, attachments: _attachments);
 
   String _exportJsonForCreator(String? creator) {
-    if (creator == null) return encodeInstantJson(_strokes, stamps: _stamps, attachments: _attachments);
+    if (creator == null) {
+      return encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, attachments: _attachments);
+    }
     final mineStrokes = _strokes.where((s) => s.creatorName == creator).toList(growable: false);
     final mineStamps = _stamps.where((s) => s.creatorName == creator).toList(growable: false);
-    return encodeInstantJson(mineStrokes, stamps: mineStamps, attachments: _attachments);
+    final mineRects = _rects.where((r) => r.creatorName == creator).toList(growable: false);
+    return encodeInstantJson(mineStrokes, stamps: mineStamps, rects: mineRects, attachments: _attachments);
   }
 
   /// Switch the active tool. No-op if [tool] is already active. Clears
@@ -737,6 +770,7 @@ class PdfAnnotationController extends ChangeNotifier {
     return _AnnotationSnapshot(
       strokes: List<PdfInkAnnotation>.unmodifiable(_strokes),
       stamps: List<PdfStampAnnotation>.unmodifiable(_stamps),
+      rects: List<PdfRectAnnotation>.unmodifiable(_rects),
       attachments: Map<String, PdfStampAttachment>.unmodifiable(_attachments),
     );
   }
@@ -748,6 +782,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _stamps
       ..clear()
       ..addAll(snapshot.stamps);
+    _rects
+      ..clear()
+      ..addAll(snapshot.rects);
     _attachments
       ..clear()
       ..addAll(snapshot.attachments);
@@ -1175,10 +1212,16 @@ Rect _clampRectInsidePage(Rect rect, Size pageSize) {
 }
 
 class _AnnotationSnapshot {
-  const _AnnotationSnapshot({required this.strokes, required this.stamps, required this.attachments});
+  const _AnnotationSnapshot({
+    required this.strokes,
+    required this.stamps,
+    required this.rects,
+    required this.attachments,
+  });
 
   final List<PdfInkAnnotation> strokes;
   final List<PdfStampAnnotation> stamps;
+  final List<PdfRectAnnotation> rects;
   final Map<String, PdfStampAttachment> attachments;
 }
 

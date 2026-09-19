@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'pdf_ink_annotation.dart';
+import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 
 /// Instant JSON document-format URL written into exported documents.
@@ -14,10 +15,25 @@ const String _inkAnnotationType = 'pspdfkit/ink';
 /// Annotation type identifier for image stamps.
 const String _imageAnnotationType = 'pspdfkit/image';
 
-/// Result of [decodeInstantJson]. Carries ink strokes, image stamps, and
-/// the attachment store referenced by stamp annotations.
+/// Annotation type identifier for rectangles (the format's native shape
+/// type, so a rectangle stays readable by any Instant JSON consumer).
+const String _rectAnnotationType = 'pspdfkit/shape/rectangle';
+
+/// `strokeColor` emitted for a rectangle that has no fill. The shape
+/// schema requires `strokeColor`, and with `strokeWidth: 0` the value is
+/// never painted, so any hex is schema-valid; a constant keeps the
+/// payload stable across round trips.
+const String _noFillStrokeColor = '#000000';
+
+/// Result of [decodeInstantJson]. Carries ink strokes, rectangles, image
+/// stamps, and the attachment store referenced by stamp annotations.
 class DecodedInstantJson {
-  const DecodedInstantJson({required this.strokes, required this.stamps, required this.attachments});
+  const DecodedInstantJson({
+    required this.strokes,
+    required this.stamps,
+    required this.attachments,
+    this.rects = const [],
+  });
 
   /// Decoded freehand ink strokes (`pspdfkit/ink` entries).
   final List<PdfInkAnnotation> strokes;
@@ -27,12 +43,15 @@ class DecodedInstantJson {
   /// Stamps with missing or malformed attachments are silently skipped.
   final List<PdfStampAnnotation> stamps;
 
+  /// Decoded rectangles (`pspdfkit/shape/rectangle` entries).
+  final List<PdfRectAnnotation> rects;
+
   /// Attachment store keyed by lowercase hex SHA-256.
   final Map<String, PdfStampAttachment> attachments;
 }
 
-/// Encode ink strokes (and optionally stamps + attachments) as an Instant
-/// JSON document.
+/// Encode ink strokes (and optionally stamps, rectangles + attachments)
+/// as an Instant JSON document.
 ///
 /// The result is a wrapped document
 /// `{"format": ..., "annotations": [...], "attachments": {...}}` containing
@@ -47,6 +66,7 @@ class DecodedInstantJson {
 String encodeInstantJson(
   List<PdfInkAnnotation> annotations, {
   List<PdfStampAnnotation> stamps = const [],
+  List<PdfRectAnnotation> rects = const [],
   Map<String, PdfStampAttachment> attachments = const {},
 }) {
   final entries = <Map<String, dynamic>>[];
@@ -55,6 +75,13 @@ String encodeInstantJson(
   }
   for (final stamp in stamps) {
     entries.add(_encodeStampEntry(stamp));
+  }
+  // Rectangles are emitted last so adding the kind leaves the entry order
+  // of every pre-existing payload untouched. Entry order carries no paint
+  // meaning: the page painter sorts by `createdAt` (see
+  // `buildPageAnnotationPaintSequence`).
+  for (final rect in rects) {
+    entries.add(_encodeRectEntry(rect));
   }
 
   final referenced = <String>{for (final s in stamps) s.attachmentSha256};
@@ -118,6 +145,32 @@ Map<String, dynamic> _encodeStampEntry(PdfStampAnnotation a) {
   };
 }
 
+Map<String, dynamic> _encodeRectEntry(PdfRectAnnotation a) {
+  final r = a.rectInPdfSpace;
+  final fill = a.fillColor;
+  // `strokeColor` is required by the Instant JSON shape schema, so it is
+  // emitted equal to `fillColor` with `strokeWidth: 0`: schema-valid and
+  // borderless. Unlike the stamp encoder, NO cardinal `rotation` key is
+  // emitted: the shape schema defines no rotation, so pushing one would
+  // put an off-schema key into a document a real PSPDFKit importer might
+  // read. Only the namespaced extension carries the angle.
+  return {
+    'v': 1,
+    'type': _rectAnnotationType,
+    'id': a.id,
+    'pageIndex': a.pageIndex,
+    'bbox': [r.left, r.top, r.width, r.height],
+    'opacity': 1.0,
+    'strokeWidth': 0,
+    'strokeColor': fill == null ? _noFillStrokeColor : colorToHex(fill),
+    if (fill != null) 'fillColor': colorToHex(fill),
+    'pdfrx:rotation': _normalizeAngle(a.rotationDeg),
+    'createdAt': _formatTimestamp(a.createdAt),
+    'updatedAt': _formatTimestamp(a.updatedAt),
+    if (a.creatorName != null) 'creatorName': a.creatorName,
+  };
+}
+
 double _normalizeAngle(double degrees) {
   final mod = degrees % 360;
   return mod < 0 ? mod + 360 : mod;
@@ -172,8 +225,9 @@ String _formatTimestamp(DateTime t) => t.toUtc().toIso8601String();
 /// array of annotations (`[...]`). Empty / whitespace input returns an
 /// empty list. Malformed JSON throws [FormatException].
 ///
-/// Stamp (`pspdfkit/image`) entries are silently dropped — callers that
-/// need stamps must use [decodeInstantJsonFull] instead.
+/// Stamp (`pspdfkit/image`) and rectangle (`pspdfkit/shape/rectangle`)
+/// entries are silently dropped; callers that need them must use
+/// [decodeInstantJsonFull] instead.
 ///
 /// Entries are silently skipped when:
 /// * `type` is not `"pspdfkit/ink"`
@@ -198,8 +252,8 @@ List<PdfInkAnnotation> decodeInstantJson(
   ).strokes;
 }
 
-/// Decode an Instant JSON document into ink strokes, image stamps, and
-/// the referenced attachment store.
+/// Decode an Instant JSON document into ink strokes, image stamps,
+/// rectangles, and the referenced attachment store.
 ///
 /// Same input tolerance as [decodeInstantJson]. Stamp entries whose
 /// `imageAttachmentId` is missing from the document's `attachments` map
@@ -252,6 +306,7 @@ DecodedInstantJson decodeInstantJsonFull(
 
   final strokes = <PdfInkAnnotation>[];
   final stamps = <PdfStampAnnotation>[];
+  final rects = <PdfRectAnnotation>[];
   for (final entry in entries) {
     if (entry is! Map<String, dynamic>) continue;
     final type = entry['type'];
@@ -262,6 +317,9 @@ DecodedInstantJson decodeInstantJsonFull(
     } else if (type == _imageAnnotationType) {
       final stamp = _decodeStampEntry(entry, pageCount: pageCount, attachments: attachments);
       if (stamp != null) stamps.add(stamp);
+    } else if (type == _rectAnnotationType) {
+      final rect = _decodeRectEntry(entry, pageCount: pageCount);
+      if (rect != null) rects.add(rect);
     }
   }
 
@@ -270,7 +328,7 @@ DecodedInstantJson decodeInstantJsonFull(
   final referenced = <String>{for (final s in stamps) s.attachmentSha256};
   attachments.removeWhere((k, _) => !referenced.contains(k));
 
-  return DecodedInstantJson(strokes: strokes, stamps: stamps, attachments: attachments);
+  return DecodedInstantJson(strokes: strokes, stamps: stamps, rects: rects, attachments: attachments);
 }
 
 List<PdfInkAnnotation> _decodeInkEntry(
@@ -437,6 +495,67 @@ PdfStampAnnotation? _decodeStampEntry(
     rotationDeg: rotationDeg,
     attachmentSha256: attachmentId,
     contentType: resolvedContentType,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+    creatorName: creatorName,
+  );
+}
+
+PdfRectAnnotation? _decodeRectEntry(Map<String, dynamic> entry, {required int pageCount}) {
+  // Same tolerances as the ink and stamp decoders: a soft `v >= 1`
+  // forward-compat marker, a bounds-checked `pageIndex`, a bbox of at
+  // least 4 numbers, and a non-empty string id. A malformed entry is
+  // skipped on its own; its siblings still decode.
+  final version = entry['v'];
+  if (version is! int || version < 1) return null;
+  final pageIndex = entry['pageIndex'];
+  if (pageIndex is! int) return null;
+  if (pageIndex < 0 || pageIndex >= pageCount) return null;
+
+  final bbox = entry['bbox'];
+  if (bbox is! List || bbox.length < 4) return null;
+  for (var i = 0; i < 4; i++) {
+    if (bbox[i] is! num) return null;
+  }
+  final rect = Rect.fromLTWH(
+    (bbox[0] as num).toDouble(),
+    (bbox[1] as num).toDouble(),
+    (bbox[2] as num).toDouble(),
+    (bbox[3] as num).toDouble(),
+  );
+
+  final id = entry['id'];
+  if (id is! String || id.isEmpty) return null;
+
+  final pdfrxRotation = entry['pdfrx:rotation'];
+  final fallbackRotation = entry['rotation'];
+  double rotationDeg;
+  if (pdfrxRotation is num) {
+    rotationDeg = pdfrxRotation.toDouble();
+  } else if (fallbackRotation is num) {
+    rotationDeg = fallbackRotation.toDouble();
+  } else {
+    rotationDeg = 0.0;
+  }
+
+  // A missing or unparseable `fillColor` means NO fill, never white: see
+  // [PdfRectAnnotation.fillColor]. The entry is still kept so it
+  // round-trips intact.
+  final fillColor = colorFromHex(entry['fillColor']);
+
+  // Same deterministic Unix-epoch sentinel the ink and stamp decoders
+  // use, NOT `DateTime.now()`. See [_decodeInkEntry].
+  final createdAt = _parseTimestamp(entry['createdAt']) ?? _epochSentinel;
+  final updatedAt = _parseTimestamp(entry['updatedAt']) ?? createdAt;
+  final rawCreatorName = entry['creatorName'];
+  final creatorName = rawCreatorName is String ? rawCreatorName : null;
+
+  return PdfRectAnnotation(
+    id: id,
+    pageIndex: pageIndex,
+    rectInPdfSpace: rect,
+    rotationDeg: rotationDeg,
+    fillColor: fillColor,
     createdAt: createdAt,
     updatedAt: updatedAt,
     creatorName: creatorName,

@@ -9,6 +9,7 @@ export 'src/widgets/annotations/pdf_annotation_controller.dart'
     show PdfAnnotationHandle, PdfAnnotationTool, PdfStampHandle, kMinAnnotationSizePts;
 export 'src/widgets/annotations/pdf_annotation_overlay_labels.dart';
 export 'src/widgets/annotations/pdf_ink_annotation.dart';
+export 'src/widgets/annotations/pdf_rect_annotation.dart';
 export 'src/widgets/annotations/pdf_stamp_annotation.dart';
 export 'src/widgets/annotations/pdf_stamp_definition.dart';
 export 'src/widgets/annotations/pdf_stamp_picture.dart'

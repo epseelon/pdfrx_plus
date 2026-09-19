@@ -631,4 +631,249 @@ void main() {
       expect(twice, once);
     });
   });
+
+  group('rectangle annotations (pspdfkit/shape/rectangle)', () {
+    PdfRectAnnotation rect({
+      String id = 'rect-1',
+      int pageIndex = 0,
+      Rect rectInPdfSpace = const Rect.fromLTWH(10, 20, 120.5, 40.25),
+      double rotationDeg = 0.0,
+      Color? fillColor = const Color(0xFFFFFFFF),
+      String? creatorName = 'alice',
+      DateTime? createdAt,
+      DateTime? updatedAt,
+    }) => PdfRectAnnotation(
+      id: id,
+      pageIndex: pageIndex,
+      rectInPdfSpace: rectInPdfSpace,
+      rotationDeg: rotationDeg,
+      fillColor: fillColor,
+      createdAt: createdAt ?? DateTime.utc(2026, 9, 19, 10),
+      updatedAt: updatedAt ?? DateTime.utc(2026, 9, 19, 10),
+      creatorName: creatorName,
+    );
+
+    DecodedInstantJson decodeFull(String json, {int pageCount = 3}) => decodeInstantJsonFull(
+      json,
+      pageCount: pageCount,
+      defaultColor: const Color(0xFF000000),
+      defaultLineWidth: 2.0,
+    );
+
+    PdfInkAnnotation ink({String? id, List<Offset> points = const [Offset(0, 0), Offset(1, 1)]}) => PdfInkAnnotation(
+      id: id,
+      pageIndex: 0,
+      pointsInPdfSpace: points,
+      lineWidth: 2.0,
+      strokeColor: const Color(0xFFFF3B30),
+      opacity: 1.0,
+      createdAt: DateTime.utc(2024, 1, 1, 12),
+      updatedAt: DateTime.utc(2024, 1, 1, 12),
+    );
+
+    Map<String, dynamic> firstEntry(String json) =>
+        ((jsonDecode(json) as Map<String, dynamic>)['annotations'] as List).first as Map<String, dynamic>;
+
+    String wrap(List<Map<String, dynamic>> entries) =>
+        jsonEncode({'format': instantJsonFormat, 'annotations': entries});
+
+    Map<String, dynamic> rectEntry({
+      Object? id = 'rect-1',
+      Object? v = 1,
+      Object? pageIndex = 0,
+      Object? bbox = const [10.0, 20.0, 120.5, 40.25],
+      Object? fillColor = '#FFFFFF',
+      Object? strokeColor = '#FFFFFF',
+    }) => {
+      'v': ?v,
+      'type': 'pspdfkit/shape/rectangle',
+      'id': ?id,
+      'pageIndex': ?pageIndex,
+      'bbox': ?bbox,
+      'opacity': 1.0,
+      'strokeWidth': 0,
+      'strokeColor': ?strokeColor,
+      'fillColor': ?fillColor,
+      'pdfrx:rotation': 0.0,
+      'createdAt': '2026-09-19T10:00:00.000Z',
+      'updatedAt': '2026-09-19T10:00:00.000Z',
+      'creatorName': 'alice',
+    };
+
+    test('encodes the full pspdfkit/shape/rectangle entry shape', () {
+      final entry = firstEntry(encodeInstantJson(const [], rects: [rect()]));
+      expect(entry, {
+        'v': 1,
+        'type': 'pspdfkit/shape/rectangle',
+        'id': 'rect-1',
+        'pageIndex': 0,
+        'bbox': [10.0, 20.0, 120.5, 40.25],
+        'opacity': 1.0,
+        'strokeWidth': 0,
+        'strokeColor': '#FFFFFF',
+        'fillColor': '#FFFFFF',
+        'pdfrx:rotation': 0.0,
+        'createdAt': '2026-09-19T10:00:00.000Z',
+        'updatedAt': '2026-09-19T10:00:00.000Z',
+        'creatorName': 'alice',
+      });
+    });
+
+    test('emits strokeColor equal to fillColor with strokeWidth 0 (borderless)', () {
+      final entry = firstEntry(encodeInstantJson(const [], rects: [rect(fillColor: const Color(0xFFFAF6EC))]));
+      expect(entry['fillColor'], '#FAF6EC');
+      expect(entry['strokeColor'], entry['fillColor']);
+      expect(entry['strokeWidth'], 0);
+    });
+
+    test('emits NO cardinal rotation key, only the namespaced pdfrx:rotation', () {
+      final json = encodeInstantJson(const [], rects: [rect(rotationDeg: 88.7)]);
+      final entry = firstEntry(json);
+      expect(entry.containsKey('rotation'), isFalse);
+      expect(entry['pdfrx:rotation'], 88.7);
+    });
+
+    test('omits creatorName when null', () {
+      final entry = firstEntry(encodeInstantJson(const [], rects: [rect(creatorName: null)]));
+      expect(entry.containsKey('creatorName'), isFalse);
+    });
+
+    test('decodes a rectangle entry into DecodedInstantJson.rects', () {
+      final decoded = decodeFull(wrap([rectEntry()]));
+      expect(decoded.rects, hasLength(1));
+      final r = decoded.rects.single;
+      expect(r.id, 'rect-1');
+      expect(r.pageIndex, 0);
+      expect(r.rectInPdfSpace, const Rect.fromLTWH(10, 20, 120.5, 40.25));
+      expect(r.fillColor, const Color(0xFFFFFFFF));
+      expect(r.rotationDeg, 0.0);
+      expect(r.creatorName, 'alice');
+      expect(decoded.strokes, isEmpty);
+      expect(decoded.stamps, isEmpty);
+    });
+
+    test('encode -> decode round-trips every rectangle field', () {
+      final original = rect(
+        id: 'rect-xyz',
+        pageIndex: 2,
+        rectInPdfSpace: const Rect.fromLTWH(1.5, 2.25, 33.75, 44.5),
+        rotationDeg: 37.5,
+        fillColor: const Color(0xFF007AFF),
+        creatorName: 'bob',
+        createdAt: DateTime.utc(2026, 3, 4, 5, 6, 7, 8),
+        updatedAt: DateTime.utc(2026, 3, 4, 9, 10, 11, 12),
+      );
+      final r = decodeFull(encodeInstantJson(const [], rects: [original])).rects.single;
+      expect(r.id, original.id);
+      expect(r.pageIndex, original.pageIndex);
+      expect(r.rectInPdfSpace, original.rectInPdfSpace);
+      expect(r.rotationDeg, original.rotationDeg);
+      expect(r.fillColor, original.fillColor);
+      expect(r.creatorName, original.creatorName);
+      expect(r.createdAt, original.createdAt);
+      expect(r.updatedAt, original.updatedAt);
+    });
+
+    test('encode(decode(x)) == x for a payload mixing ink, stamps and rectangles', () {
+      final x = encodeInstantJson(
+        [ink(id: 'ink-1', points: const [Offset(1, 2), Offset(3, 4)])],
+        rects: [rect(id: 'r1'), rect(id: 'r2', rotationDeg: 12.5, fillColor: const Color(0xFFFF3B30))],
+      );
+      final decoded = decodeFull(x);
+      expect(decoded.rects, hasLength(2));
+      expect(encodeInstantJson(decoded.strokes, stamps: decoded.stamps, rects: decoded.rects), x);
+    });
+
+    test('a malformed rectangle is skipped without dropping its siblings', () {
+      final json = wrap([
+        rectEntry(id: 'good-1'),
+        rectEntry(id: 'bad-bbox', bbox: const [1, 2, 'x', 4]),
+        rectEntry(id: 'bad-bbox-short', bbox: const [1, 2, 3]),
+        rectEntry(id: 'bad-bbox-type', bbox: 'nope'),
+        rectEntry(id: null),
+        rectEntry(id: ''),
+        rectEntry(id: 'bad-page', pageIndex: 99),
+        rectEntry(id: 'bad-page-negative', pageIndex: -1),
+        rectEntry(id: 'bad-version', v: 0),
+        rectEntry(id: 'good-2'),
+      ]);
+      final decoded = decodeFull(json);
+      expect(decoded.rects.map((r) => r.id), ['good-1', 'good-2']);
+    });
+
+    test('a missing or unparseable fillColor decodes to NO fill, and the entry is kept', () {
+      final json = wrap([
+        rectEntry(id: 'no-fill', fillColor: null),
+        rectEntry(id: 'bad-fill', fillColor: 'not-a-color'),
+        rectEntry(id: 'non-string-fill', fillColor: 42),
+      ]);
+      final decoded = decodeFull(json);
+      expect(decoded.rects.map((r) => r.id), ['no-fill', 'bad-fill', 'non-string-fill']);
+      for (final r in decoded.rects) {
+        // Never a white fallback: white is the tool's creation default only.
+        expect(r.fillColor, isNull);
+      }
+    });
+
+    test('a no-fill rectangle survives a re-encode (still schema-valid, still no fill)', () {
+      final once = encodeInstantJson(const [], rects: decodeFull(wrap([rectEntry(fillColor: null)])).rects);
+      final entry = firstEntry(once);
+      expect(entry.containsKey('fillColor'), isFalse);
+      expect(entry['strokeWidth'], 0);
+      expect(entry['strokeColor'], isA<String>());
+      expect(decodeFull(once).rects.single.fillColor, isNull);
+      expect(encodeInstantJson(const [], rects: decodeFull(once).rects), once);
+    });
+
+    test('rotationDeg reads pdfrx:rotation, then rotation, then 0.0', () {
+      final json = wrap([
+        rectEntry(id: 'both'),
+        {...rectEntry(id: 'cardinal-only'), 'pdfrx:rotation': null, 'rotation': 90},
+        {...rectEntry(id: 'neither'), 'pdfrx:rotation': null},
+      ]);
+      final byId = {for (final r in decodeFull(json).rects) r.id: r};
+      expect(byId['both']!.rotationDeg, 0.0);
+      expect(byId['cardinal-only']!.rotationDeg, 90.0);
+      expect(byId['neither']!.rotationDeg, 0.0);
+    });
+
+    test('missing timestamps fall back to the Unix epoch sentinel (not now())', () {
+      final entry = rectEntry()
+        ..remove('createdAt')
+        ..remove('updatedAt');
+      final r = decodeFull(wrap([entry])).rects.single;
+      final epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      expect(r.createdAt, epoch);
+      expect(r.updatedAt, epoch);
+    });
+
+    test('accepts any positive integer v (forward-compat with pspdfkit v:2)', () {
+      expect(decodeFull(wrap([rectEntry(v: 2)])).rects, hasLength(1));
+    });
+
+    test('the legacy ink-only decodeInstantJson ignores rectangles', () {
+      final json = encodeInstantJson([ink(id: 'k')], rects: [rect()]);
+      final strokes = decodeInstantJson(
+        json,
+        pageCount: 3,
+        defaultColor: const Color(0xFF000000),
+        defaultLineWidth: 2.0,
+      );
+      expect(strokes, hasLength(1));
+      expect(strokes.single.id, 'k');
+    });
+
+    test('copyWith replaces only the supplied fields', () {
+      final original = rect();
+      final moved = original.copyWith(rectInPdfSpace: const Rect.fromLTWH(1, 2, 3, 4));
+      expect(moved.rectInPdfSpace, const Rect.fromLTWH(1, 2, 3, 4));
+      expect(moved.id, original.id);
+      expect(moved.pageIndex, original.pageIndex);
+      expect(moved.rotationDeg, original.rotationDeg);
+      expect(moved.fillColor, original.fillColor);
+      expect(moved.createdAt, original.createdAt);
+      expect(moved.updatedAt, original.updatedAt);
+      expect(moved.creatorName, original.creatorName);
+    });
+  });
 }
