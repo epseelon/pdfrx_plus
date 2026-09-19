@@ -989,11 +989,19 @@ class _PdfViewerState extends State<PdfViewer>
           }
         }
 
+        // Continuous mode passes NO anchor, so the initial placement falls
+        // back to `params.pageAnchor`, and, crucially, the underflow slack
+        // falls back to `params.underflowAnchor`. `_adjustBoundaryMargins`
+        // reads `anchor ?? params.underflowAnchor`, so naming an anchor here
+        // would override the underflow anchor for the initial frame and pin
+        // an underflowing document to that edge whatever the caller asked
+        // for. Discrete mode still names its anchor, because there the
+        // anchor IS the placement contract.
         await _goToPage(
           pageNumber: _pageNumber!,
           duration: Duration.zero,
           maintainCurrentZoom: true,
-          anchor: widget.params.pageTransition == PageTransition.discrete ? discreteAnchor : PdfPageAnchor.topLeft,
+          anchor: widget.params.pageTransition == PageTransition.discrete ? discreteAnchor : null,
         );
         if (mounted && _document != null && _controller != null) {
           widget.params.onViewerReady?.call(_document!, _controller!);

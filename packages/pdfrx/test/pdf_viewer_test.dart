@@ -11,6 +11,28 @@ import 'package:pdfrx/pdfrx.dart';
 final testPdfFile = File('example/viewer/assets/hello.pdf');
 final binding = TestWidgetsFlutterBinding.ensureInitialized();
 
+/// Pump until the viewer has laid out and is ready to interact.
+///
+/// [PdfViewerController.isReady] reports only that the DOCUMENT loaded.
+/// `_layout` and `_viewSize` are set one rebuild later, inside the
+/// `LayoutBuilder` that only runs once `_document != null`, so a test that
+/// stops at `isReady` reaches `controller.layout` / `viewSize` / `setZoom`
+/// a frame too early and dies on a null check.
+///
+/// These loops used to also spin while `controller.alternativeFitScale`
+/// was null, which WAS a real layout guard back when it was a nullable
+/// field left null until the layout existed. Upstream `52862d9` turned it
+/// into a getter that falls back to `_defaultMinScale` and can never return
+/// null, so the guard quietly became a no-op. `onViewerReady` is the
+/// documented "ready to interact" signal, so spin on that instead.
+Future<void> pumpUntilViewerReady(WidgetTester tester, bool Function() ready) async {
+  for (var i = 0; i < 20 && !ready(); i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+  }
+  expect(ready(), isTrue, reason: 'PdfViewer did not become ready to interact within 20 pumps');
+}
+
 void main() {
   // For testing purpose, we should run on the command line
   // and pdfrxInitialize is a better way to initialize the library.
@@ -38,6 +60,7 @@ void main() {
     await binding.setSurfaceSize(Size(1000, 2000));
     addTearDown(() => binding.setSurfaceSize(null));
     final controller = PdfViewerController();
+    var viewerReady = false;
     final document = await tester.runAsync(
       () async => PdfDocument.openData(
         await testPdfFile.readAsBytes(),
@@ -52,21 +75,18 @@ void main() {
         home: PdfViewer(
           PdfDocumentRefDirect(document!),
           controller: controller,
-          params: const PdfViewerParams(
+          params: PdfViewerParams(
             minScale: 0.1,
             useAlternativeFitScaleAsMinScale: false,
-            behaviorControlParams: PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
+            onViewerReady: (_, _) => viewerReady = true,
+            behaviorControlParams: const PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
           ),
         ),
       ),
     );
 
-    for (var i = 0; i < 20 && (!controller.isReady || controller.alternativeFitScale == null); i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-    }
+    await pumpUntilViewerReady(tester, () => viewerReady);
     expect(controller.isReady, isTrue);
-    expect(controller.alternativeFitScale, isNotNull);
     expect(controller.params.pageAnchor, PdfPageAnchor.top);
 
     final underflowZoom = controller.alternativeFitScale! * 0.5;
@@ -87,6 +107,7 @@ void main() {
     await binding.setSurfaceSize(Size(500, 1000));
     addTearDown(() => binding.setSurfaceSize(null));
     final controller = PdfViewerController();
+    var viewerReady = false;
     final document = await tester.runAsync(
       () async => PdfDocument.openData(
         await testPdfFile.readAsBytes(),
@@ -102,6 +123,7 @@ void main() {
           PdfDocumentRefDirect(document!),
           controller: controller,
           params: PdfViewerParams(
+            onViewerReady: (_, _) => viewerReady = true,
             layoutPages: (pages, params, helper) {
               const pageSize = Size(1000, 500);
               final pageLayouts = [
@@ -118,12 +140,8 @@ void main() {
       ),
     );
 
-    for (var i = 0; i < 20 && (!controller.isReady || controller.alternativeFitScale == null); i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-    }
+    await pumpUntilViewerReady(tester, () => viewerReady);
     expect(controller.isReady, isTrue);
-    expect(controller.alternativeFitScale, isNotNull);
 
     final pageRect = controller.layout.pageLayouts.first;
     final pageCenterYInViewport = (pageRect.center.dy - controller.visibleRect.top) * controller.currentZoom;
@@ -138,6 +156,7 @@ void main() {
     await binding.setSurfaceSize(Size(500, 1000));
     addTearDown(() => binding.setSurfaceSize(null));
     final controller = PdfViewerController();
+    var viewerReady = false;
     final document = await tester.runAsync(
       () async => PdfDocument.openData(
         await testPdfFile.readAsBytes(),
@@ -154,6 +173,7 @@ void main() {
           controller: controller,
           params: PdfViewerParams(
             underflowAnchor: PdfPageAnchor.top,
+            onViewerReady: (_, _) => viewerReady = true,
             layoutPages: (pages, params, helper) {
               const pageSize = Size(1000, 500);
               final pageLayouts = [
@@ -170,12 +190,8 @@ void main() {
       ),
     );
 
-    for (var i = 0; i < 20 && (!controller.isReady || controller.alternativeFitScale == null); i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-    }
+    await pumpUntilViewerReady(tester, () => viewerReady);
     expect(controller.isReady, isTrue);
-    expect(controller.alternativeFitScale, isNotNull);
 
     final pageTopInViewport =
         (controller.layout.pageLayouts.first.top - controller.visibleRect.top) * controller.currentZoom;
@@ -190,6 +206,7 @@ void main() {
     await binding.setSurfaceSize(Size(1000, 2000));
     addTearDown(() => binding.setSurfaceSize(null));
     final controller = PdfViewerController();
+    var viewerReady = false;
     final document = await tester.runAsync(
       () async => PdfDocument.openData(
         await testPdfFile.readAsBytes(),
@@ -204,20 +221,17 @@ void main() {
         home: PdfViewer(
           PdfDocumentRefDirect(document!),
           controller: controller,
-          params: const PdfViewerParams(
+          params: PdfViewerParams(
             scaleEnabled: false,
-            behaviorControlParams: PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
+            onViewerReady: (_, _) => viewerReady = true,
+            behaviorControlParams: const PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
           ),
         ),
       ),
     );
 
-    for (var i = 0; i < 20 && (!controller.isReady || controller.alternativeFitScale == null); i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-    }
+    await pumpUntilViewerReady(tester, () => viewerReady);
     expect(controller.isReady, isTrue);
-    expect(controller.alternativeFitScale, isNotNull);
     await tester.pump();
 
     final zoomBefore = controller.currentZoom;
