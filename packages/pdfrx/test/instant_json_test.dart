@@ -653,12 +653,8 @@ void main() {
       creatorName: creatorName,
     );
 
-    DecodedInstantJson decodeFull(String json, {int pageCount = 3}) => decodeInstantJsonFull(
-      json,
-      pageCount: pageCount,
-      defaultColor: const Color(0xFF000000),
-      defaultLineWidth: 2.0,
-    );
+    DecodedInstantJson decodeFull(String json, {int pageCount = 3}) =>
+        decodeInstantJsonFull(json, pageCount: pageCount, defaultColor: const Color(0xFF000000), defaultLineWidth: 2.0);
 
     PdfInkAnnotation ink({String? id, List<Offset> points = const [Offset(0, 0), Offset(1, 1)]}) => PdfInkAnnotation(
       id: id,
@@ -776,8 +772,13 @@ void main() {
 
     test('encode(decode(x)) == x for a payload mixing ink, stamps and rectangles', () {
       final x = encodeInstantJson(
-        [ink(id: 'ink-1', points: const [Offset(1, 2), Offset(3, 4)])],
-        rects: [rect(id: 'r1'), rect(id: 'r2', rotationDeg: 12.5, fillColor: const Color(0xFFFF3B30))],
+        [
+          ink(id: 'ink-1', points: const [Offset(1, 2), Offset(3, 4)]),
+        ],
+        rects: [
+          rect(id: 'r1'),
+          rect(id: 'r2', rotationDeg: 12.5, fillColor: const Color(0xFFFF3B30)),
+        ],
       );
       final decoded = decodeFull(x);
       expect(decoded.rects, hasLength(2));
@@ -874,6 +875,125 @@ void main() {
       expect(moved.createdAt, original.createdAt);
       expect(moved.updatedAt, original.updatedAt);
       expect(moved.creatorName, original.creatorName);
+    });
+  });
+
+  group('unrecognised entries survive a round trip', () {
+    const color = Color(0xFFFF0000);
+
+    // A plausible "type after next": a kind no build in this tree knows,
+    // carrying fields the decoder has no model for.
+    const futureEntry = {
+      'v': 1,
+      'type': 'pspdfkit/shape/ellipse',
+      'id': 'future-1',
+      'pageIndex': 0,
+      'bbox': [10.0, 20.0, 30.0, 40.0],
+      'fillColor': '#00FF00',
+      'pdfrx:someFutureKnob': {'nested': true, 'count': 7},
+      'createdAt': '2026-01-02T03:04:05.000Z',
+      'updatedAt': '2026-01-02T03:04:05.000Z',
+      'creatorName': 'alice',
+    };
+
+    DecodedInstantJson decode(String json, {int pageCount = 1}) =>
+        decodeInstantJsonFull(json, pageCount: pageCount, defaultColor: color, defaultLineWidth: 1.0);
+
+    test('decode carries an unknown type verbatim instead of dropping it', () {
+      final json = jsonEncode({
+        'annotations': [
+          futureEntry,
+          {
+            'v': 1,
+            'type': 'pspdfkit/ink',
+            'id': 'ink-1',
+            'pageIndex': 0,
+            'lines': {
+              'points': [
+                [
+                  [0, 0],
+                  [1, 1],
+                ],
+              ],
+            },
+            'lineWidth': 1,
+            'strokeColor': '#000000',
+          },
+        ],
+      });
+
+      final decoded = decode(json);
+
+      expect(decoded.strokes, hasLength(1));
+      expect(decoded.unknowns, hasLength(1));
+      expect(decoded.unknowns.single, futureEntry);
+    });
+
+    test('encode re-emits an unknown entry unchanged', () {
+      final json = encodeInstantJson(const [], unknowns: [Map<String, dynamic>.from(futureEntry)]);
+
+      final entries = (jsonDecode(json) as Map<String, dynamic>)['annotations'] as List<dynamic>;
+      expect(entries, hasLength(1));
+      expect(entries.single, futureEntry);
+    });
+
+    test('decode -> encode -> decode preserves the unknown entry exactly', () {
+      final original = jsonEncode({
+        'annotations': [futureEntry],
+      });
+
+      final once = decode(original);
+      final reencoded = encodeInstantJson(
+        once.strokes,
+        stamps: once.stamps,
+        rects: once.rects,
+        unknowns: once.unknowns,
+        attachments: once.attachments,
+      );
+      final twice = decode(reencoded);
+
+      expect(twice.unknowns.single, futureEntry);
+    });
+
+    test("an unknown entry's attachment is kept, not pruned as orphaned", () {
+      const sha = 'aabbcc';
+      final binary = base64Encode(const [1, 2, 3]);
+      final json = jsonEncode({
+        'annotations': [
+          {...futureEntry, 'imageAttachmentId': sha},
+        ],
+        'attachments': {
+          sha: {'binary': binary, 'contentType': 'image/png'},
+        },
+      });
+
+      final decoded = decode(json);
+
+      // The binary must survive the decode even though no STAMP refers to
+      // it: the entry that does is one this build cannot model.
+      expect(decoded.attachments.containsKey(sha), isTrue);
+
+      final reencoded = encodeInstantJson(
+        decoded.strokes,
+        unknowns: decoded.unknowns,
+        attachments: decoded.attachments,
+      );
+      final out = jsonDecode(reencoded) as Map<String, dynamic>;
+      final attachments = out['attachments'] as Map<String, dynamic>;
+      expect(attachments[sha], {'binary': binary, 'contentType': 'image/png'});
+    });
+
+    test('an unknown entry on an out-of-range page is still carried', () {
+      // Bounds checks belong to the decoders that build a model. A kind
+      // with no model gets no geometry opinion imposed on it, or a page
+      // count that shrank once would silently delete it.
+      final json = jsonEncode({
+        'annotations': [
+          {...futureEntry, 'pageIndex': 99},
+        ],
+      });
+
+      expect(decode(json).unknowns, hasLength(1));
     });
   });
 }

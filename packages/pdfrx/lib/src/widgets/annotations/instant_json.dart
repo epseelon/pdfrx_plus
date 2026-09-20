@@ -26,13 +26,15 @@ const String _rectAnnotationType = 'pspdfkit/shape/rectangle';
 const String _noFillStrokeColor = '#000000';
 
 /// Result of [decodeInstantJson]. Carries ink strokes, rectangles, image
-/// stamps, and the attachment store referenced by stamp annotations.
+/// stamps, the entries this build does not recognise, and the attachment
+/// store referenced by stamp and unknown annotations.
 class DecodedInstantJson {
   const DecodedInstantJson({
     required this.strokes,
     required this.stamps,
     required this.attachments,
     this.rects = const [],
+    this.unknowns = const [],
   });
 
   /// Decoded freehand ink strokes (`pspdfkit/ink` entries).
@@ -46,8 +48,35 @@ class DecodedInstantJson {
   /// Decoded rectangles (`pspdfkit/shape/rectangle` entries).
   final List<PdfRectAnnotation> rects;
 
+  /// Entries whose `type` this build does not recognise, kept VERBATIM as
+  /// their raw JSON maps so they survive a decode/encode round trip.
+  ///
+  /// There is no model class to decode them into and no painter that can
+  /// draw them, so they are carried, not interpreted: a build that
+  /// predates a newer annotation kind renders everything it understands
+  /// and hands the rest back unchanged on export. Dropping them here
+  /// instead would let an older client silently erase a newer client's
+  /// work the first time it re-exported a shared document.
+  ///
+  /// An unknown entry naming an `imageAttachmentId` keeps that
+  /// attachment alive in [attachments] too, so its binary travels with
+  /// it rather than being pruned as unreferenced.
+  final List<Map<String, dynamic>> unknowns;
+
   /// Attachment store keyed by lowercase hex SHA-256.
   final Map<String, PdfStampAttachment> attachments;
+}
+
+/// The attachment ids referenced by [unknowns], read from each entry's
+/// `imageAttachmentId`. Shared by the encoder and the decoder so both
+/// agree on which binaries an unrecognised entry keeps alive.
+Set<String> _attachmentIdsOfUnknowns(List<Map<String, dynamic>> unknowns) {
+  final out = <String>{};
+  for (final entry in unknowns) {
+    final id = entry['imageAttachmentId'];
+    if (id is String && id.isNotEmpty) out.add(id);
+  }
+  return out;
 }
 
 /// Encode ink strokes (and optionally stamps, rectangles + attachments)
@@ -61,12 +90,18 @@ class DecodedInstantJson {
 ///
 /// The `attachments` field is omitted entirely when there are no stamps
 /// (i.e. legacy ink-only output is byte-identical to today). Only
-/// attachments referenced by at least one [stamps] entry are included;
-/// orphaned bytes in [attachments] are dropped.
+/// attachments referenced by at least one [stamps] or [unknowns] entry
+/// are included; orphaned bytes in [attachments] are dropped.
+///
+/// [unknowns] are entries this build could not interpret (see
+/// [DecodedInstantJson.unknowns]). They are re-emitted verbatim so a
+/// decode/encode round trip through a build that predates a newer
+/// annotation kind preserves that kind instead of erasing it.
 String encodeInstantJson(
   List<PdfInkAnnotation> annotations, {
   List<PdfStampAnnotation> stamps = const [],
   List<PdfRectAnnotation> rects = const [],
+  List<Map<String, dynamic>> unknowns = const [],
   Map<String, PdfStampAttachment> attachments = const {},
 }) {
   final entries = <Map<String, dynamic>>[];
@@ -83,8 +118,12 @@ String encodeInstantJson(
   for (final rect in rects) {
     entries.add(_encodeRectEntry(rect));
   }
+  // Unrecognised entries trail the kinds this build understands, for the
+  // same reason rectangles do. They are emitted exactly as they were
+  // decoded: this encoder must not normalise a shape it cannot read.
+  entries.addAll(unknowns);
 
-  final referenced = <String>{for (final s in stamps) s.attachmentSha256};
+  final referenced = <String>{for (final s in stamps) s.attachmentSha256, ..._attachmentIdsOfUnknowns(unknowns)};
   final emittedAttachments = <String, dynamic>{};
   for (final entry in attachments.entries) {
     if (!referenced.contains(entry.key)) continue;
@@ -253,14 +292,19 @@ List<PdfInkAnnotation> decodeInstantJson(
 }
 
 /// Decode an Instant JSON document into ink strokes, image stamps,
-/// rectangles, and the referenced attachment store.
+/// rectangles, unrecognised entries, and the referenced attachment store.
 ///
 /// Same input tolerance as [decodeInstantJson]. Stamp entries whose
 /// `imageAttachmentId` is missing from the document's `attachments` map
 /// are silently skipped; attachments whose `binary` is malformed base64
-/// are dropped along with every annotation that references them. Unknown
-/// `type` values are ignored without dropping the document (forward
-/// compatibility).
+/// are dropped along with every annotation that references them.
+///
+/// An entry whose `type` this build does not recognise is NOT dropped: it
+/// is carried verbatim in [DecodedInstantJson.unknowns] (with its
+/// attachment, if it names one) so [encodeInstantJson] can put it back
+/// exactly as it arrived. Forward compatibility here means preserving a
+/// newer client's annotation kind through a round trip, not merely
+/// tolerating its presence in the input.
 DecodedInstantJson decodeInstantJsonFull(
   String json, {
   required int pageCount,
@@ -307,6 +351,7 @@ DecodedInstantJson decodeInstantJsonFull(
   final strokes = <PdfInkAnnotation>[];
   final stamps = <PdfStampAnnotation>[];
   final rects = <PdfRectAnnotation>[];
+  final unknowns = <Map<String, dynamic>>[];
   for (final entry in entries) {
     if (entry is! Map<String, dynamic>) continue;
     final type = entry['type'];
@@ -320,15 +365,27 @@ DecodedInstantJson decodeInstantJsonFull(
     } else if (type == _rectAnnotationType) {
       final rect = _decodeRectEntry(entry, pageCount: pageCount);
       if (rect != null) rects.add(rect);
+    } else {
+      // A kind this build does not know. Carried verbatim rather than
+      // ignored: see [DecodedInstantJson.unknowns].
+      unknowns.add(entry);
     }
   }
 
-  // Drop attachments not referenced by any decoded stamp so the in-memory
-  // store stays in sync with the on-disk payload's actual usage.
-  final referenced = <String>{for (final s in stamps) s.attachmentSha256};
+  // Drop attachments referenced by nothing that survived the decode, so
+  // the in-memory store stays in sync with the payload's actual usage.
+  // An unknown entry counts as a reference: its binary must outlive the
+  // round trip exactly as a stamp's does.
+  final referenced = <String>{for (final s in stamps) s.attachmentSha256, ..._attachmentIdsOfUnknowns(unknowns)};
   attachments.removeWhere((k, _) => !referenced.contains(k));
 
-  return DecodedInstantJson(strokes: strokes, stamps: stamps, rects: rects, attachments: attachments);
+  return DecodedInstantJson(
+    strokes: strokes,
+    stamps: stamps,
+    rects: rects,
+    unknowns: unknowns,
+    attachments: attachments,
+  );
 }
 
 List<PdfInkAnnotation> _decodeInkEntry(

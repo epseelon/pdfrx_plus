@@ -74,6 +74,14 @@ class PdfAnnotationController extends ChangeNotifier {
   final List<PdfInkAnnotation> _strokes = [];
   final List<PdfStampAnnotation> _stamps = [];
   final List<PdfRectAnnotation> _rects = [];
+
+  /// Imported entries whose `type` this build does not recognise, held
+  /// verbatim so an export puts them back (see
+  /// [DecodedInstantJson.unknowns]). They are never painted, never
+  /// selectable and never editable: the controller is their custodian,
+  /// not their editor. Without this the viewer would quietly strip a
+  /// newer client's annotation kind from every document it re-exported.
+  final List<Map<String, dynamic>> _unknowns = [];
   final Map<String, PdfStampAttachment> _attachments = {};
   final ValueNotifier<bool> _modeListenable = ValueNotifier<bool>(false);
   final ValueNotifier<int> _inFlightTick = ValueNotifier<int>(0);
@@ -418,17 +426,19 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replace strokes, stamps, rectangles, and attachments in a single
-  /// update. History is cleared, listeners notified once.
+  /// Replace strokes, stamps, rectangles, unrecognised entries, and
+  /// attachments in a single update. History is cleared, listeners
+  /// notified once.
   ///
-  /// [rects] defaults to empty so call sites that predate rectangles keep
-  /// compiling; they then replace the rectangle set with nothing, which is
-  /// the right reading of a wholesale replacement.
+  /// [rects] and [unknowns] default to empty so call sites that predate
+  /// them keep compiling; they then replace those sets with nothing,
+  /// which is the right reading of a wholesale replacement.
   void setAllWithStamps({
     required List<PdfInkAnnotation> strokes,
     required List<PdfStampAnnotation> stamps,
     required Map<String, PdfStampAttachment> attachments,
     List<PdfRectAnnotation> rects = const [],
+    List<Map<String, dynamic>> unknowns = const [],
   }) {
     _strokes
       ..clear()
@@ -439,6 +449,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _rects
       ..clear()
       ..addAll(rects);
+    _unknowns
+      ..clear()
+      ..addAll(unknowns);
     _attachments
       ..clear()
       ..addAll(attachments);
@@ -476,6 +489,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final hadStrokes = _strokes.isNotEmpty;
     final hadStamps = _stamps.isNotEmpty;
     final hadRects = _rects.isNotEmpty;
+    final hadUnknowns = _unknowns.isNotEmpty;
     final hadAttachments = _attachments.isNotEmpty;
     final hadSelection = _selectedStampId.value != null || _selectedRectId.value != null;
     final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
@@ -483,6 +497,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (!hadStrokes &&
         !hadStamps &&
         !hadRects &&
+        !hadUnknowns &&
         !hadAttachments &&
         !hadSelection &&
         !hadHistory &&
@@ -492,6 +507,10 @@ class PdfAnnotationController extends ChangeNotifier {
     _strokes.clear();
     _stamps.clear();
     _rects.clear();
+    // Carried entries belong to the document that was open. Leaving them
+    // here would export the previous part's unrecognised annotations into
+    // the newly opened one, exactly as a stale rectangle list would.
+    _unknowns.clear();
     _attachments.clear();
     // The viewer calls this on every document swap, so a cache left
     // undrained here leaks every picture decoded for the previous
@@ -514,7 +533,8 @@ class PdfAnnotationController extends ChangeNotifier {
   /// are silently skipped. The controller's current [strokeColor] and
   /// [strokeWidth] are used as fallback defaults when an imported entry
   /// is missing those fields. Stamps and attachments embedded in the
-  /// document are imported as well.
+  /// document are imported as well, as are entries of a kind this build
+  /// does not recognise (held verbatim for re-export, never painted).
   void importJson(String json, {required int pageCount}) {
     final decoded = decodeInstantJsonFull(
       json,
@@ -526,22 +546,50 @@ class PdfAnnotationController extends ChangeNotifier {
       strokes: decoded.strokes,
       stamps: decoded.stamps,
       rects: decoded.rects,
+      unknowns: decoded.unknowns,
       attachments: decoded.attachments,
     );
   }
 
-  /// Serialize all strokes (and stamps, rectangles + attachments, if any)
-  /// as an Instant JSON document.
-  String exportJson() => encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, attachments: _attachments);
+  /// Serialize all strokes (and stamps, rectangles, carried unrecognised
+  /// entries + attachments, if any) as an Instant JSON document.
+  String exportJson() =>
+      encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, unknowns: _unknowns, attachments: _attachments);
+
+  /// The `creatorName` of a carried entry, or null when it names none.
+  static String? _unknownCreator(Map<String, dynamic> entry) {
+    final name = entry['creatorName'];
+    return name is String ? name : null;
+  }
 
   String _exportJsonForCreator(String? creator) {
     if (creator == null) {
-      return encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, attachments: _attachments);
+      return encodeInstantJson(
+        _strokes,
+        stamps: _stamps,
+        rects: _rects,
+        unknowns: _unknowns,
+        attachments: _attachments,
+      );
     }
     final mineStrokes = _strokes.where((s) => s.creatorName == creator).toList(growable: false);
     final mineStamps = _stamps.where((s) => s.creatorName == creator).toList(growable: false);
     final mineRects = _rects.where((r) => r.creatorName == creator).toList(growable: false);
-    return encodeInstantJson(mineStrokes, stamps: mineStamps, rects: mineRects, attachments: _attachments);
+    // Carried entries are filtered by `creatorName` exactly as the kinds
+    // above are. Exporting every carried entry regardless of author would
+    // be worse than dropping them: the caller persists this export as
+    // THIS creator's own set, so another creator's entry would be
+    // re-attributed and duplicated on every save. An entry naming no
+    // creator is not attributable to anyone and is excluded too, which is
+    // how a null `creatorName` already behaves for ink, stamps and rects.
+    final mineUnknowns = _unknowns.where((e) => _unknownCreator(e) == creator).toList(growable: false);
+    return encodeInstantJson(
+      mineStrokes,
+      stamps: mineStamps,
+      rects: mineRects,
+      unknowns: mineUnknowns,
+      attachments: _attachments,
+    );
   }
 
   /// Switch the active tool. No-op if [tool] is already active. Clears
@@ -815,6 +863,11 @@ class PdfAnnotationController extends ChangeNotifier {
     _refreshHistoryListenables();
   }
 
+  // `_unknowns` is deliberately NOT captured here. No tool mutates a
+  // carried entry, so it is identical in every snapshot on the stack;
+  // the only two writers (`setAllWithStamps` and `clear`) both clear the
+  // history. Adding it would be harmless but misleading: undo has no
+  // business restoring something undo can never have changed.
   _AnnotationSnapshot _currentSnapshot() {
     return _AnnotationSnapshot(
       strokes: List<PdfInkAnnotation>.unmodifiable(_strokes),
@@ -1625,12 +1678,8 @@ class _ShapeDragState {
 /// The in-flight rubber band: the anchor corner pinned at pointer-down,
 /// the page it lives on, and the fill the committed rectangle will take.
 class _RectDraft {
-  _RectDraft({
-    required this.pageIndex,
-    required this.anchor,
-    required this.pageSize,
-    required this.fillColor,
-  }) : free = anchor;
+  _RectDraft({required this.pageIndex, required this.anchor, required this.pageSize, required this.fillColor})
+    : free = anchor;
 
   final int pageIndex;
   final Offset anchor;
