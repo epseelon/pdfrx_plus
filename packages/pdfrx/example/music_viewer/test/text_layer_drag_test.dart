@@ -20,7 +20,12 @@ const _padding = 24.0;
 // Distance from the gizmo's top edge to the rotation handle's centre.
 const _rotationHandleOffset = 20.0;
 
-Future<void> _pumpLayer(WidgetTester tester, PdfAnnotationController controller, {double padding = _padding}) async {
+Future<void> _pumpLayer(
+  WidgetTester tester,
+  PdfAnnotationController controller, {
+  double padding = _padding,
+  double? textPadding,
+}) async {
   final page = FakePdfPage(pageNumber: 1, width: _pageSize.width, height: _pageSize.height);
   await tester.pumpWidget(
     MaterialApp(
@@ -36,6 +41,7 @@ Future<void> _pumpLayer(WidgetTester tester, PdfAnnotationController controller,
               pageRect: Offset.zero & _pageSize,
               highlighterOpacity: 0.35,
               selectedStampPadding: padding,
+              selectedTextPadding: textPadding,
             ),
           ),
         ),
@@ -118,6 +124,36 @@ void main() {
       controller.undo();
       expect(controller.texts.single.rectInPdfSpace, box);
       expect(controller.canUndoListenable.value, isFalse);
+    });
+
+    testWidgets('a text annotation can be padded less than a stamp: its gizmo takes selectedTextPadding', (
+      tester,
+    ) async {
+      final controller = _armed(_text());
+      addTearDown(controller.dispose);
+      await _pumpLayer(tester, controller, textPadding: 12);
+
+      expect(
+        tester.getRect(_gizmo).shift(-_origin(tester)),
+        const Rect.fromLTWH(100, 200, 72, 18).inflate(12),
+        reason: 'not the 24 px the stamps keep',
+      );
+    });
+
+    testWidgets('at 12 px a short word still has a body zone to be moved by, beside its centre', (tester) async {
+      final controller = _armed(_text());
+      addTearDown(controller.dispose);
+      await _pumpLayer(tester, controller, textPadding: 12);
+      const box = Rect.fromLTWH(100, 200, 72, 18);
+
+      // 24 px from the left handle, 32 px from the top-left and top ones:
+      // outside every handle's 22 px hit radius. The very centre of an
+      // 18 px tall word is NOT: it is 21 px from the top handle.
+      final press = box.centerLeft + const Offset(12, 0);
+      await _dragFromTo(tester, press, press + const Offset(120, -60));
+
+      expect(controller.texts.single.rectInPdfSpace, const Rect.fromLTWH(220, 140, 72, 18));
+      expect(controller.texts.single.autoSize, isTrue, reason: 'a move, not a resize');
     });
 
     testWidgets('a handle drag on selected auto-sized text converts it to a text area and rewraps it', (tester) async {

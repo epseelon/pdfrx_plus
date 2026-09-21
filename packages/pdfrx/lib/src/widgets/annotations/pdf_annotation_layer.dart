@@ -49,6 +49,7 @@ class PdfAnnotationLayer extends StatefulWidget {
     required this.highlighterOpacity,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
+    this.selectedTextPadding,
     this.labels = const PdfAnnotationOverlayLabels(),
     super.key,
   });
@@ -68,6 +69,11 @@ class PdfAnnotationLayer extends StatefulWidget {
   /// annotation is padded by the same amount. Sourced by the
   /// `PdfViewer` from `PdfViewerParams.selectedStampPadding`.
   final double selectedStampPadding;
+
+  /// The same padding for a selected text annotation, when it should
+  /// differ from a stamp's. `null` pads text like stamps. Sourced from
+  /// `PdfViewerParams.selectedTextPadding`.
+  final double? selectedTextPadding;
 
   /// Opacity stamped onto every newly-committed highlighter stroke. The
   /// caller (the `PdfViewer`) sources this from
@@ -995,8 +1001,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   }
 
   /// The handle rectangle for the SELECTED [text]: its display box
-  /// inflated by [PdfAnnotationLayer.selectedStampPadding], as for a
-  /// stamp and for the same reason. The handles clear the glyphs, and a
+  /// inflated by [PdfAnnotationLayer.selectedTextPadding] (the stamp's
+  /// padding when that is `null`), as for a stamp and for the same reason. The handles clear the glyphs, and a
   /// short word keeps a body zone to be moved by: with the handles on its
   /// border every press inside 'rit.' would land within a handle's hit
   /// radius.
@@ -1005,7 +1011,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   /// hit-tested at its own bounds ([_textBodyContains]), so a tap beside
   /// it still creates the next annotation, and the outline drawn while
   /// editing hugs the box.
-  Rect _textSelectionRect(PdfTextAnnotation text) => _selectionRect(_textLocalRect(text), widget.selectedStampPadding);
+  Rect _textSelectionRect(PdfTextAnnotation text) =>
+      _selectionRect(_textLocalRect(text), widget.selectedTextPadding ?? widget.selectedStampPadding);
 
   PdfAnnotationHandle? _hitTestTextHandles(PdfTextAnnotation text, Offset local) => hitTestHandles(
     rect: _textSelectionRect(text),

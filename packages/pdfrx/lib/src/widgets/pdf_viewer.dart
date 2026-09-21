@@ -2618,6 +2618,7 @@ class _PdfViewerState extends State<PdfViewer>
               highlighterOpacity: widget.params.highlighterOpacity,
               selectedStampInterfaceColor: widget.params.selectedStampInterfaceColor,
               selectedStampPadding: widget.params.selectedStampPadding,
+              selectedTextPadding: widget.params.selectedTextPadding,
               labels: widget.params.annotationOverlayLabels,
             ),
           ),

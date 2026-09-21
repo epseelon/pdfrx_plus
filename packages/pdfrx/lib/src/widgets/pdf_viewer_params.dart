@@ -107,6 +107,7 @@ class PdfViewerParams {
     this.stampPictureDecoder,
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
+    this.selectedTextPadding,
     this.annotationOverlayLabels = const PdfAnnotationOverlayLabels(),
     this.annotationFonts = const PdfAnnotationFonts.none(),
     ScrollPhysics? scrollPhysics,
@@ -760,8 +761,19 @@ class PdfViewerParams {
   ///
   /// A selected text annotation is padded by the same amount, so its
   /// handles clear the glyphs and a short word keeps a body zone to be
-  /// moved by. Rectangles are not padded.
+  /// moved by, unless [selectedTextPadding] says otherwise. Rectangles
+  /// are not padded.
   final double selectedStampPadding;
+
+  /// Padding in screen pixels between a selected text annotation and its
+  /// handle rectangle, when it should differ from a stamp's. `null` (the
+  /// default) pads text by [selectedStampPadding].
+  ///
+  /// Text usually wants less than a stamp: a line of text is wide, so
+  /// its handles are far apart already. Mind the handles' 22 px hit
+  /// radius: the smaller the padding, the smaller the body zone a short
+  /// word at low zoom can be moved by.
+  final double? selectedTextPadding;
 
   /// Strings used by the annotation selection overlay: the rotation
   /// control, the delete control, and the eight resize handles.
@@ -907,6 +919,7 @@ class PdfViewerParams {
         other.stampPictureDecoder != stampPictureDecoder ||
         other.selectedStampInterfaceColor != selectedStampInterfaceColor ||
         other.selectedStampPadding != selectedStampPadding ||
+        other.selectedTextPadding != selectedTextPadding ||
         other.annotationOverlayLabels != annotationOverlayLabels ||
         other.annotationFonts != annotationFonts ||
         other.scrollPhysics != scrollPhysics ||
@@ -991,6 +1004,7 @@ class PdfViewerParams {
         other.stampPictureDecoder == stampPictureDecoder &&
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.selectedStampPadding == selectedStampPadding &&
+        other.selectedTextPadding == selectedTextPadding &&
         other.annotationOverlayLabels == annotationOverlayLabels &&
         other.annotationFonts == annotationFonts &&
         other.scrollPhysics == scrollPhysics &&
@@ -1073,6 +1087,7 @@ class PdfViewerParams {
         stampPictureDecoder.hashCode ^
         selectedStampInterfaceColor.hashCode ^
         selectedStampPadding.hashCode ^
+        selectedTextPadding.hashCode ^
         annotationOverlayLabels.hashCode ^
         annotationFonts.hashCode ^
         scrollPhysics.hashCode ^
