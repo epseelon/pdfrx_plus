@@ -33,6 +33,14 @@ class _PdfViewerKeyHandlerState extends State<PdfViewerKeyHandler> {
   // through to let the platform process them. See #585.
   final _handledKeys = <LogicalKeyboardKey>{};
 
+  /// Whether the primary focus sits in an [EditableText], which is what
+  /// every text field is built on.
+  bool _focusIsInTextInput() {
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused == null) return false;
+    return focused.widget is EditableText || focused.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final childBuilder = Builder(
@@ -55,6 +63,12 @@ class _PdfViewerKeyHandlerState extends State<PdfViewerKeyHandler> {
       canRequestFocus: widget.params.canRequestFocus,
       onFocusChange: widget.onFocusChange,
       onKeyEvent: (node, event) {
+        // A key typed into a text input beneath the viewer (the inline
+        // text annotation editor) is the input's, never the viewer's.
+        // Claiming it here does more than steal a shortcut: a key event
+        // reported as handled is not turned into text by the platform,
+        // so Space ("next page" to the viewer) inserted nothing at all.
+        if (_focusIsInTextInput()) return KeyEventResult.ignored;
         if (event is KeyDownEvent || event is KeyRepeatEvent) {
           if (widget.onKeyRepeat(widget.params, event.logicalKey, event is KeyDownEvent)) {
             _handledKeys.add(event.logicalKey);
