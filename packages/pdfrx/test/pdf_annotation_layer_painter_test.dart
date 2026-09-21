@@ -155,7 +155,9 @@ Future<PdfAnnotationController> _pumpPage(
     stamps: stamps,
     rects: rects,
     texts: texts,
-    attachments: {_sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml')},
+    attachments: {
+      _sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml'),
+    },
   );
   if (tool != null) controller.enterMode(creatorName: creatorName, tool: tool);
   await tester.pumpWidget(
@@ -272,7 +274,12 @@ void main() {
       // The `paints` matcher advances through the recorded calls in
       // order, so this asserts the stroke is drawn BEFORE the stamp:
       // i.e. the stamp covers it.
-      expect(find.byType(CustomPaint), paints..something(_isDrawPath)..something(_isDrawPicture));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPath)
+          ..something(_isDrawPicture),
+      );
     });
 
     testWidgets('a stamp created before a stroke paints under it', (tester) async {
@@ -282,7 +289,12 @@ void main() {
         stamps: [_stampAt(DateTime.utc(2026, 1, 1), id: 'stamp')],
       );
 
-      expect(find.byType(CustomPaint), paints..something(_isDrawPicture)..something(_isDrawPath));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPicture)
+          ..something(_isDrawPath),
+      );
     });
 
     testWidgets('the in-flight stroke paints last, over an already-committed stamp', (tester) async {
@@ -303,12 +315,15 @@ void main() {
         ..appendPoint(const Offset(40, 40));
       await tester.pump();
 
-      expect(find.byType(CustomPaint), paints..something(_isDrawPicture)..something(_isDrawPath));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPicture)
+          ..something(_isDrawPath),
+      );
     });
 
-    testWidgets('a stamp whose picture has not decoded yet draws nothing and does not blank the page', (
-      tester,
-    ) async {
+    testWidgets('a stamp whose picture has not decoded yet draws nothing and does not blank the page', (tester) async {
       // A decoder that never completes stands in for the window between
       // a stamp appearing and its bytes finishing decoding.
       final controller = PdfAnnotationController()
@@ -317,7 +332,9 @@ void main() {
       controller.setAllWithStamps(
         strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'ink')],
         stamps: [_stampAt(DateTime.utc(2026, 1, 2), id: 'stamp')],
-        attachments: {_sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml')},
+        attachments: {
+          _sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml'),
+        },
       );
 
       await tester.pumpWidget(
@@ -341,7 +358,9 @@ void main() {
       controller.setAllWithStamps(
         strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'ink')],
         stamps: [_stampAt(DateTime.utc(2026, 1, 2), id: 'stamp')],
-        attachments: {_sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'application/pdf')},
+        attachments: {
+          _sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'application/pdf'),
+        },
       );
 
       await tester.pumpWidget(
@@ -371,7 +390,12 @@ void main() {
 
       // `paints` advances through the recorded calls in order, so this
       // asserts the stroke is drawn BEFORE the rectangle: it is covered.
-      expect(find.byType(CustomPaint), paints..something(_isDrawPath)..something(_isDrawRect));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPath)
+          ..something(_isDrawRect),
+      );
     });
 
     testWidgets('a rectangle created before a stroke paints under it', (tester) async {
@@ -382,7 +406,12 @@ void main() {
         rects: [_rectAt(DateTime.utc(2026, 1, 1), id: 'rect')],
       );
 
-      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isDrawPath));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawRect)
+          ..something(_isDrawPath),
+      );
     });
 
     testWidgets('a rectangle created after a stamp paints over it', (tester) async {
@@ -393,7 +422,12 @@ void main() {
         rects: [_rectAt(DateTime.utc(2026, 1, 2), id: 'rect')],
       );
 
-      expect(find.byType(CustomPaint), paints..something(_isDrawPicture)..something(_isDrawRect));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPicture)
+          ..something(_isDrawRect),
+      );
     });
 
     testWidgets('a stamp created after a rectangle paints over it', (tester) async {
@@ -404,7 +438,12 @@ void main() {
         rects: [_rectAt(DateTime.utc(2026, 1, 1), id: 'rect')],
       );
 
-      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isDrawPicture));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawRect)
+          ..something(_isDrawPicture),
+      );
     });
 
     testWidgets('a rectangle with no fillColor paints nothing', (tester) async {
@@ -515,6 +554,32 @@ void main() {
       );
       expect(controller.memoizedTextLayoutCount, 1);
     });
+
+    testWidgets('a text annotation is not painted while it is edited: the inline editor is its only rendering', (
+      tester,
+    ) async {
+      final controller = await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        texts: [_textAt(DateTime.utc(2026, 1, 1))],
+        tool: PdfAnnotationTool.text,
+      );
+      Future<void> repaint() => tester.pumpWidget(
+        Center(
+          child: SizedBox(width: 100, height: 100, child: CustomPaint(painter: _PageTestPainter(controller))),
+        ),
+      );
+      expect(find.byType(CustomPaint), paints..something(_isDrawParagraph));
+
+      controller.beginTextEdit('text', pageSize: const Size(100, 100));
+      await repaint();
+      expect(find.byType(CustomPaint), isNot(paints..something(_isDrawParagraph)));
+
+      controller.commitTextEdit();
+      await repaint();
+      expect(find.byType(CustomPaint), paints..something(_isDrawParagraph));
+    });
   });
 
   group('paintPageAnnotations rectangle hint outline', () {
@@ -530,7 +595,12 @@ void main() {
 
       // Painted inside the rectangle's own step of the sequence: the
       // fill first, the hint immediately on top of it.
-      expect(find.byType(CustomPaint), paints..something(_isDrawRect)..something(_isStrokedPath));
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawRect)
+          ..something(_isStrokedPath),
+      );
     });
 
     testWidgets('is absent when annotation mode is off, but the rectangle still renders', (tester) async {
@@ -612,7 +682,10 @@ void main() {
       // anything carrying a real timestamp, not float to the top.
       final entries = buildPageAnnotationPaintSequence(
         pageIndex: 0,
-        strokes: [_strokeAt(_epoch, id: 'aaa'), _strokeAt(DateTime.utc(2026, 1, 1), id: 'real')],
+        strokes: [
+          _strokeAt(_epoch, id: 'aaa'),
+          _strokeAt(DateTime.utc(2026, 1, 1), id: 'real'),
+        ],
         stamps: [_stampAt(_epoch, id: 'bbb')],
       );
 
@@ -622,7 +695,10 @@ void main() {
     test('an entry with a real timestamp always paints over every sentinel entry', () {
       final entries = buildPageAnnotationPaintSequence(
         pageIndex: 0,
-        strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'zzz-late-id'), _strokeAt(_epoch, id: 'aaa')],
+        strokes: [
+          _strokeAt(DateTime.utc(2026, 1, 1), id: 'zzz-late-id'),
+          _strokeAt(_epoch, id: 'aaa'),
+        ],
         stamps: [_stampAt(_epoch, id: 'bbb')],
       );
 
@@ -632,7 +708,10 @@ void main() {
     test('entries anchored to another page are not in the sequence', () {
       final entries = buildPageAnnotationPaintSequence(
         pageIndex: 0,
-        strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'here'), _strokeAt(DateTime.utc(2026, 1, 1), id: 'there', pageIndex: 1)],
+        strokes: [
+          _strokeAt(DateTime.utc(2026, 1, 1), id: 'here'),
+          _strokeAt(DateTime.utc(2026, 1, 1), id: 'there', pageIndex: 1),
+        ],
         stamps: [_stampAt(DateTime.utc(2026, 1, 1), id: 'stamp-there', pageIndex: 1)],
       );
 
@@ -666,10 +745,10 @@ void main() {
         creatorName: 'bob',
       );
 
-      expect(
-        idsOf(buildPageAnnotationPaintSequence(pageIndex: 0, strokes: [mineFirst], stamps: [theirsLater])),
-        ['mine', 'theirs'],
-      );
+      expect(idsOf(buildPageAnnotationPaintSequence(pageIndex: 0, strokes: [mineFirst], stamps: [theirsLater])), [
+        'mine',
+        'theirs',
+      ]);
       expect(
         idsOf(
           buildPageAnnotationPaintSequence(

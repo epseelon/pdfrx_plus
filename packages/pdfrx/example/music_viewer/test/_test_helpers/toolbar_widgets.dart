@@ -193,6 +193,7 @@ class AnnotationStylePopups extends StatelessWidget {
         );
       case PdfAnnotationTool.stamp:
       case PdfAnnotationTool.rectangle:
+      case PdfAnnotationTool.text:
       case PdfAnnotationTool.hand:
         return const SizedBox.shrink();
     }

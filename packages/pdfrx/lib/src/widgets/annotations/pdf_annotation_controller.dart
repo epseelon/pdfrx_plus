@@ -43,6 +43,12 @@ enum PdfAnnotationTool {
   /// existing one owned by the current creator.
   rectangle,
 
+  /// A tap creates auto-sized text at the tap point and opens the inline
+  /// editor; a press-and-drag rubber-bands a text area. A tap on an
+  /// existing [PdfTextAnnotation] owned by the current creator selects
+  /// it, and a second tap edits it.
+  text,
+
   /// Navigation tool. Input is not captured by the annotation layer; the
   /// underlying viewer handles pan, scroll, tap, and pinch-zoom. No
   /// annotation is created.
@@ -107,6 +113,9 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
   final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
   final ValueNotifier<String?> _selectedRectId = ValueNotifier<String?>(null);
+  final ValueNotifier<String?> _selectedTextId = ValueNotifier<String?>(null);
+  final ValueNotifier<String?> _editingTextId = ValueNotifier<String?>(null);
+  final ValueNotifier<int> _textEditTick = ValueNotifier<int>(0);
   final PdfStampPictureCache _stampPictures = PdfStampPictureCache();
   final Map<int, List<PdfAnnotationPaintEntry>> _paintSequences = <int, List<PdfAnnotationPaintEntry>>{};
   final Map<String, _MemoizedTextLayout> _textLayouts = <String, _MemoizedTextLayout>{};
@@ -124,6 +133,8 @@ class PdfAnnotationController extends ChangeNotifier {
   _ShapeDragState? _stampDragState;
   _ShapeDragState? _rectDragState;
   _RectDraft? _rectDraft;
+  _TextAreaDraft? _textDraft;
+  _TextEditSession? _textEdit;
   final Map<int, _PageLayoutInfo> _pageLayouts = {};
 
   /// Bumps on every [appendPoint] so the live-drawing layer can repaint
@@ -384,7 +395,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// empty until a text annotation has been painted.
   void _pruneTextLayouts() {
     if (_textLayouts.isEmpty) return;
-    final live = {for (final t in _texts) t.id};
+    final live = {for (final t in _texts) t.id, ?_textEdit?.working.id};
     _textLayouts.removeWhere((id, memo) {
       if (live.contains(id)) return false;
       memo.dispose();
@@ -520,6 +531,10 @@ class PdfAnnotationController extends ChangeNotifier {
   Future<void> exitMode({required Future<void> Function(String json)? onAnnotationsChanged}) async {
     if (!_modeListenable.value) return;
     final creator = _currentCreator;
+    // An edit in progress is committed first, and before the export
+    // below, so the JSON handed to the callback carries the typed text
+    // (or, for an empty edit, no longer carries the annotation).
+    commitTextEdit(keepSelected: false);
     // Tear down transient selection state before flipping mode off so
     // the selection overlay (handles + delete button) doesn't leak past
     // the session boundary, and any half-finished drag or rubber band
@@ -527,8 +542,10 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_stampDragState != null) _stampDragState = null;
     if (_rectDragState != null) _rectDragState = null;
     if (_rectDraft != null) _rectDraft = null;
+    if (_textDraft != null) _textDraft = null;
     if (_selectedStampId.value != null) _selectedStampId.value = null;
     if (_selectedRectId.value != null) _selectedRectId.value = null;
+    if (_selectedTextId.value != null) _selectedTextId.value = null;
     if (_pendingStamp.value != null) _pendingStamp.value = null;
     _modeListenable.value = false;
     if (onAnnotationsChanged != null) {
@@ -585,9 +602,14 @@ class PdfAnnotationController extends ChangeNotifier {
       ..clear()
       ..addAll(attachments);
     // A wholesale replacement can retire the very shape a selection
-    // points at, so both kinds' selections go, not just the stamp's.
+    // points at, so every kind's selection goes, not just the stamp's.
     if (_selectedStampId.value != null) _selectedStampId.value = null;
     if (_selectedRectId.value != null) _selectedRectId.value = null;
+    if (_selectedTextId.value != null) _selectedTextId.value = null;
+    // Likewise an edit whose annotation was just replaced away. An edit
+    // on a new annotation is not part of any set yet and carries on.
+    final edit = _textEdit;
+    if (edit != null && !edit.isNew && _textById(edit.working.id) == null) _abandonTextEdit();
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
@@ -622,7 +644,9 @@ class PdfAnnotationController extends ChangeNotifier {
     final hadTexts = _texts.isNotEmpty;
     final hadUnknowns = _unknowns.isNotEmpty;
     final hadAttachments = _attachments.isNotEmpty;
-    final hadSelection = _selectedStampId.value != null || _selectedRectId.value != null;
+    final hadSelection =
+        _selectedStampId.value != null || _selectedRectId.value != null || _selectedTextId.value != null;
+    final hadTextEdit = _textEdit != null || _textDraft != null;
     final hadHistory = _undoStack.isNotEmpty || _redoStack.isNotEmpty;
     final hadPictures = !_stampPictures.isEmpty;
     if (!hadStrokes &&
@@ -632,6 +656,7 @@ class PdfAnnotationController extends ChangeNotifier {
         !hadUnknowns &&
         !hadAttachments &&
         !hadSelection &&
+        !hadTextEdit &&
         !hadHistory &&
         !hadPictures) {
       return;
@@ -651,6 +676,11 @@ class PdfAnnotationController extends ChangeNotifier {
     _stampPictures.clear();
     if (_selectedStampId.value != null) _selectedStampId.value = null;
     if (_selectedRectId.value != null) _selectedRectId.value = null;
+    if (_selectedTextId.value != null) _selectedTextId.value = null;
+    // The edit belonged to the document that was open: committing it
+    // here would write it into the one being opened.
+    _abandonTextEdit();
+    _textDraft = null;
     _rectDraft = null;
     _stampDragState = null;
     _rectDragState = null;
@@ -736,14 +766,17 @@ class PdfAnnotationController extends ChangeNotifier {
     );
   }
 
-  /// Switch the active tool. No-op if [tool] is already active. Clears
-  /// both kinds' selections and the pending stamp on tool change: a
-  /// gizmo belongs to the tool that put it there.
+  /// Switch the active tool. No-op if [tool] is already active. Commits
+  /// a text edit in progress, then clears every kind's selection and the
+  /// pending stamp: a gizmo belongs to the tool that put it there.
   void setTool(PdfAnnotationTool tool) {
     if (_toolListenable.value == tool) return;
+    commitTextEdit(keepSelected: false);
+    if (_textDraft != null) cancelTextDraft();
     _toolListenable.value = tool;
     if (_selectedStampId.value != null) _selectedStampId.value = null;
     if (_selectedRectId.value != null) _selectedRectId.value = null;
+    if (_selectedTextId.value != null) _selectedTextId.value = null;
     if (_pendingStamp.value != null) _pendingStamp.value = null;
   }
 
@@ -836,7 +869,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// No-op when [canUndoListenable] is `false` — does not throw, does
   /// not notify listeners.
   void undo() {
-    if (_undoStack.isEmpty) return;
+    if (_undoStack.isEmpty || _textEdit != null) return;
     _redoStack.add(_currentSnapshot());
     final snapshot = _undoStack.removeLast();
     _restoreSnapshot(snapshot);
@@ -851,7 +884,7 @@ class PdfAnnotationController extends ChangeNotifier {
   /// No-op when [canRedoListenable] is `false` — does not throw, does
   /// not notify listeners.
   void redo() {
-    if (_redoStack.isEmpty) return;
+    if (_redoStack.isEmpty || _textEdit != null) return;
     _undoStack.add(_currentSnapshot());
     final snapshot = _redoStack.removeLast();
     _restoreSnapshot(snapshot);
@@ -1046,12 +1079,18 @@ class PdfAnnotationController extends ChangeNotifier {
     if (selectedRectId != null && !_rects.any((r) => r.id == selectedRectId)) {
       _selectedRectId.value = null;
     }
+    final selectedTextId = _selectedTextId.value;
+    if (selectedTextId != null && !_texts.any((t) => t.id == selectedTextId)) {
+      _selectedTextId.value = null;
+    }
   }
 
   void _refreshHistoryListenables() {
-    final canUndo = _undoStack.isNotEmpty;
+    // Both are off while a text edit is in progress.
+    final editing = _textEdit != null;
+    final canUndo = !editing && _undoStack.isNotEmpty;
     if (_canUndo.value != canUndo) _canUndo.value = canUndo;
-    final canRedo = _redoStack.isNotEmpty;
+    final canRedo = !editing && _redoStack.isNotEmpty;
     if (_canRedo.value != canRedo) _canRedo.value = canRedo;
   }
 
@@ -1110,6 +1149,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final stamp = _stampById(id);
     if (stamp == null || !_ownsStamp(stamp)) return;
     clearRectSelection();
+    clearTextSelection();
     _selectedStampId.value = id;
   }
 
@@ -1135,6 +1175,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final rect = _rectById(id);
     if (rect == null || !_ownsRect(rect)) return;
     clearStampSelection();
+    clearTextSelection();
     _selectedRectId.value = id;
   }
 
@@ -1657,6 +1698,313 @@ class PdfAnnotationController extends ChangeNotifier {
 
   bool _ownsRect(PdfRectAnnotation r) => r.creatorName == _currentCreator;
 
+  // ─────────────────────────── Text annotations ──────────────────────────
+
+  /// `id` of the currently-selected text annotation, or `null` when none
+  /// is selected. The text half of the shared gizmo's state.
+  ValueListenable<String?> get selectedTextIdListenable => _selectedTextId;
+
+  /// `id` of the text annotation whose inline edit is in progress, or
+  /// `null` when there is none.
+  ValueListenable<String?> get editingTextIdListenable => _editingTextId;
+
+  /// Bumps on every [updateTextEdit], so the layer can re-box the inline
+  /// editor as the text grows without repainting the page canvas.
+  Listenable get textEditChangedListenable => _textEditTick;
+
+  /// The annotation being edited, carrying the text typed so far, or
+  /// `null` when no edit is in progress.
+  ///
+  /// It is deliberately NOT what [texts] holds. A new annotation joins
+  /// the model at its first commit, and an existing one keeps its last
+  /// committed text there, so an export taken mid-edit never carries a
+  /// half-typed word.
+  PdfTextAnnotation? get editingText => _textEdit?.working;
+
+  /// Clear the current text annotation selection. Idempotent.
+  void clearTextSelection() {
+    if (_selectedTextId.value == null) return;
+    _selectedTextId.value = null;
+  }
+
+  /// Select the text annotation [id]. A bandmate's text annotation
+  /// cannot become selected (no-op), and selecting one drops any stamp
+  /// or rectangle selection: one gizmo is on screen at a time.
+  /// Idempotent.
+  void selectText(String? id) {
+    if (id == null) {
+      clearTextSelection();
+      return;
+    }
+    if (_selectedTextId.value == id) return;
+    final text = _textById(id);
+    if (text == null || !_ownsText(text)) return;
+    clearStampSelection();
+    clearRectSelection();
+    _selectedTextId.value = id;
+  }
+
+  PdfTextAnnotation? _textById(String id) {
+    for (final t in _texts) {
+      if (t.id == id) return t;
+    }
+    return null;
+  }
+
+  bool _ownsText(PdfTextAnnotation t) => t.creatorName == _currentCreator;
+
+  /// The text annotations on [pageIndex] the current creator may select,
+  /// in reverse unified paint order: topmost first. A bandmate's text is
+  /// skipped rather than ending the walk, by the rule
+  /// [selectableRectsForHitTest] applies to rectangles.
+  List<PdfTextAnnotation> selectableTextsForHitTest(int pageIndex) {
+    final result = <PdfTextAnnotation>[];
+    final sequence = paintSequenceForPage(pageIndex);
+    for (var i = sequence.length - 1; i >= 0; i--) {
+      final entry = sequence[i];
+      if (entry is! PdfTextPaintEntry) continue;
+      if (!_ownsText(entry.text)) continue;
+      result.add(entry.text);
+    }
+    return result;
+  }
+
+  /// Start rubber-banding a text area on [pageIndex], anchored at
+  /// [anchorPdfPoint]. Mirrors [startRectDraft]: the anchor stays pinned,
+  /// no undo snapshot is pushed, and it is a no-op while a draft is
+  /// already in flight.
+  void startTextDraft({required int pageIndex, required Offset anchorPdfPoint, required Size pageSize}) {
+    if (_textDraft != null) return;
+    _textDraft = _TextAreaDraft(
+      pageIndex: pageIndex,
+      anchor: _clampPointInsidePage(anchorPdfPoint, pageSize),
+      pageSize: pageSize,
+    );
+    _bumpRectDraft();
+  }
+
+  /// Move the in-flight text area's free corner to [freeCornerPdfPoint],
+  /// clamped **componentwise** into the page and never translated to
+  /// fit, for the reason [updateRectDraft] gives.
+  void updateTextDraft(Offset freeCornerPdfPoint) {
+    final draft = _textDraft;
+    if (draft == null) return;
+    draft.free = _clampPointInsidePage(freeCornerPdfPoint, draft.pageSize);
+    _bumpRectDraft();
+  }
+
+  /// Discard the in-flight text area: the pointer-cancel path. Safe to
+  /// call when no draft is in flight.
+  void cancelTextDraft() {
+    if (_textDraft == null) return;
+    _textDraft = null;
+    _bumpRectDraft();
+  }
+
+  /// Turn the in-flight rubber band into a text area and open its edit,
+  /// returning the new annotation's id, or `null` when there was nothing
+  /// to commit.
+  ///
+  /// A band below [kMinAnnotationSizePts] on either axis is not a text
+  /// area: it is discarded and the caller falls through to its tap
+  /// handling, as [commitRectDraft] documents, but at the pointer-DOWN
+  /// point, because a tap point becomes the text's anchor.
+  ///
+  /// Unlike a rectangle, nothing joins the model and no undo snapshot is
+  /// pushed here: that waits for the first commit of non-empty text.
+  String? commitTextDraft({DateTime Function()? clock, String Function()? idGenerator}) {
+    final draft = _textDraft;
+    if (draft == null) return null;
+    _textDraft = null;
+    final rect = draft.rect;
+    if (rect.width < kMinAnnotationSizePts || rect.height < kMinAnnotationSizePts) {
+      _bumpRectDraft();
+      return null;
+    }
+    return _beginNewTextEdit(
+      pageIndex: draft.pageIndex,
+      rect: rect,
+      autoSize: false,
+      pageSize: draft.pageSize,
+      clock: clock,
+      idGenerator: idGenerator,
+    );
+  }
+
+  /// The in-flight text area's box on [pageIndex] (PDF points), or `null`
+  /// when no rubber band is in flight there. Painted as an outline over
+  /// everything committed.
+  Rect? inFlightTextAreaFor(int pageIndex) {
+    final draft = _textDraft;
+    if (draft == null || draft.pageIndex != pageIndex) return null;
+    return draft.rect;
+  }
+
+  /// Create auto-sized text whose top-left corner (the top-left of its
+  /// first line) is [pdfPoint], and open its edit. Returns the new
+  /// annotation's id, or `null` while another edit is in progress.
+  ///
+  /// The annotation is empty, carries no placeholder, and is not part of
+  /// the model yet: see [commitTextEdit].
+  String? createTextAt({
+    required int pageIndex,
+    required Offset pdfPoint,
+    required Size pageSize,
+    DateTime Function()? clock,
+    String Function()? idGenerator,
+  }) => _beginNewTextEdit(
+    pageIndex: pageIndex,
+    rect: _clampPointInsidePage(pdfPoint, pageSize) & Size.zero,
+    autoSize: true,
+    pageSize: pageSize,
+    clock: clock,
+    idGenerator: idGenerator,
+  );
+
+  String? _beginNewTextEdit({
+    required int pageIndex,
+    required Rect rect,
+    required bool autoSize,
+    required Size pageSize,
+    DateTime Function()? clock,
+    String Function()? idGenerator,
+  }) {
+    if (_textEdit != null) return null;
+    final now = (clock ?? _defaultClock)();
+    final id = (idGenerator ?? _defaultIdGenerator)();
+    clearStampSelection();
+    clearRectSelection();
+    clearTextSelection();
+    _startTextEdit(
+      _TextEditSession(
+        isNew: true,
+        pageSize: pageSize,
+        working: PdfTextAnnotation(
+          id: id,
+          pageIndex: pageIndex,
+          rectInPdfSpace: rect,
+          rotationDeg: 0,
+          text: '',
+          fontFamily: _annotationFonts.defaultFamily,
+          autoSize: autoSize,
+          createdAt: now,
+          updatedAt: now,
+          creatorName: _currentCreator,
+        ),
+      ),
+    );
+    return id;
+  }
+
+  /// Open an edit on the existing text annotation [id], which becomes
+  /// the selection. No-op when it does not exist, belongs to a bandmate,
+  /// or another edit is in progress.
+  void beginTextEdit(String id, {required Size pageSize}) {
+    if (_textEdit != null) return;
+    final text = _textById(id);
+    if (text == null || !_ownsText(text)) return;
+    selectText(id);
+    _startTextEdit(_TextEditSession(isNew: false, pageSize: pageSize, working: text));
+  }
+
+  void _startTextEdit(_TextEditSession session) {
+    _textEdit = session;
+    _editingTextId.value = session.working.id;
+    // Undo and redo are off for the length of the edit: a snapshot
+    // restored underneath an open editor would leave it editing an
+    // annotation that is no longer there.
+    _refreshHistoryListenables();
+    // The canvas stops painting the annotation: the editor is its only
+    // rendering for now.
+    notifyListeners();
+  }
+
+  /// Replace the text typed so far. Touches neither the model nor the
+  /// undo history: an edit session is one undo step, taken at commit.
+  void updateTextEdit(String text) {
+    final session = _textEdit;
+    if (session == null || session.working.text == text) return;
+    session.working = session.working.copyWith(text: text);
+    _textEditTick.value++;
+  }
+
+  /// End the edit in progress and write it to the in-memory model. No-op
+  /// when there is none.
+  ///
+  /// Text that is empty or whitespace-only discards the annotation: a
+  /// new one leaves no trace, an existing one is deleted in one undo
+  /// snapshot. Otherwise the session is exactly one undo step, and none
+  /// at all when it changed nothing. The box written back is the display
+  /// box, because a text edit is a mutation (see [textDisplayBoxFor]).
+  ///
+  /// [keepSelected] leaves the annotation selected with its gizmo up,
+  /// which is what a tap outside or Escape wants; a tool switch and
+  /// leaving annotation mode pass `false`.
+  ///
+  /// This never saves. Persisting stays where it is for every other
+  /// kind: once, when annotation mode is left.
+  void commitTextEdit({bool keepSelected = true, DateTime Function()? clock}) {
+    final session = _textEdit;
+    if (session == null) return;
+    _textEdit = null;
+    _editingTextId.value = null;
+
+    final working = session.working;
+    final id = working.id;
+    final index = _texts.indexWhere((t) => t.id == id);
+    final isEmpty = working.text.trim().isEmpty;
+    var kept = !isEmpty;
+
+    if (isEmpty) {
+      if (index >= 0) {
+        _pushUndoSnapshot();
+        _texts.removeAt(index);
+      }
+    } else if (index < 0) {
+      _pushUndoSnapshot();
+      _texts.add(_withDisplayBox(working, session.pageSize));
+    } else if (_texts[index].text != working.text) {
+      _pushUndoSnapshot();
+      _texts[index] = _withDisplayBox(working, session.pageSize).copyWith(updatedAt: (clock ?? _defaultClock)());
+    } else {
+      kept = true;
+    }
+
+    if (kept && keepSelected) {
+      clearStampSelection();
+      clearRectSelection();
+      _selectedTextId.value = id;
+    } else {
+      clearTextSelection();
+    }
+    _refreshHistoryListenables();
+    notifyListeners();
+  }
+
+  /// [text] with its display box written into its stored box.
+  PdfTextAnnotation _withDisplayBox(PdfTextAnnotation text, Size pageSize) =>
+      text.copyWith(rectInPdfSpace: textDisplayBoxFor(text, pageSize: pageSize).displayRect);
+
+  /// Remove the text annotation [id]. No-op when it does not exist or
+  /// belongs to a bandmate. Pushes one undo snapshot.
+  void deleteText(String id) {
+    final text = _textById(id);
+    if (text == null) return;
+    if (!_ownsText(text)) return;
+    _pushUndoSnapshot();
+    _texts.removeWhere((t) => t.id == id);
+    if (_selectedTextId.value == id) _selectedTextId.value = null;
+    notifyListeners();
+  }
+
+  /// Drops the edit in progress without committing it, for the paths
+  /// where the document it belonged to is gone.
+  void _abandonTextEdit() {
+    if (_textEdit == null) return;
+    _textEdit = null;
+    _editingTextId.value = null;
+  }
+
   /// Every committed-content mutation in this class ends in a
   /// [notifyListeners], so dropping the cached per-page paint sequences
   /// here catches all of them, including any added later.
@@ -1732,6 +2080,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _pendingStamp.dispose();
     _selectedStampId.dispose();
     _selectedRectId.dispose();
+    _selectedTextId.dispose();
+    _editingTextId.dispose();
+    _textEditTick.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
     _stampPictures.dispose();
@@ -1868,6 +2219,36 @@ class _RectDraft {
   Offset free;
 
   Rect get rect => Rect.fromPoints(anchor, free);
+}
+
+/// The in-flight text area rubber band: the anchor corner pinned at
+/// pointer-down and the corner that follows the finger, already clamped
+/// into the page.
+class _TextAreaDraft {
+  _TextAreaDraft({required this.pageIndex, required this.anchor, required this.pageSize}) : free = anchor;
+
+  final int pageIndex;
+  final Offset anchor;
+  final Size pageSize;
+  Offset free;
+
+  Rect get rect => Rect.fromPoints(anchor, free);
+}
+
+/// One inline edit of a text annotation, from the editor opening to the
+/// commit.
+class _TextEditSession {
+  _TextEditSession({required this.isNew, required this.pageSize, required this.working});
+
+  /// Whether the annotation was created by this session, and so is not
+  /// part of the model until it commits.
+  final bool isNew;
+
+  /// Size of the annotation's page, which its display box depends on.
+  final Size pageSize;
+
+  /// The annotation as typed so far.
+  PdfTextAnnotation working;
 }
 
 class _PageLayoutInfo {

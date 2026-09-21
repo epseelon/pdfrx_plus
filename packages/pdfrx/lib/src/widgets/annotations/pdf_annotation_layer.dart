@@ -14,6 +14,7 @@ import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
 import 'pdf_stamp_picture.dart';
 import 'pdf_text_annotation.dart';
+import 'pdf_text_annotation_editor.dart';
 import 'selection_geometry.dart';
 
 /// Internal per-page input and overlay layer for the annotations
@@ -107,6 +108,19 @@ const double _kSelectionOutlinePx = 1.5;
 /// rectangle has no symbol for them to clear.
 const double _kRectHandlePaddingPx = 0.0;
 
+/// Outline drawn around a text annotation's box while it is edited, and
+/// around a text area while it is rubber-banded: thinner than the
+/// selection outline, since it frames text the user is reading.
+const double _kTextEditOutlinePx = 1.0;
+
+/// Width of the inline editor's caret, in screen pixels.
+const double _kTextCaretPx = 2.0;
+
+/// How far (screen pixels) around its box the inline editor still takes
+/// a tap, so a caret can be placed at the very edge of a line with a
+/// fingertip. Beyond it, a tap is a tap on the score and commits.
+const double _kTextEditorHitSlopPx = 6.0;
+
 /// Movement threshold (in widget pixels) past which a stamp-tool
 /// pointer-down is treated as a drag rather than a tap. Deliberately
 /// looser than the framework's `kPanSlop` (~18 px) so handle drags fire
@@ -122,6 +136,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   PdfAnnotationHandle? _pendingHandle;
   bool _dragRecognized = false;
   bool _rubberBanding = false;
+  // A press that committed a text edit is spent: whatever the finger
+  // does next, it neither creates nor selects anything.
+  bool _textGestureSpent = false;
   Offset? _stampCenterLocal;
   double? _initialRotationAngle;
   double? _originalStampRotationDeg;
@@ -185,6 +202,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                   _controller.stampDragChangedListenable,
                   _controller.selectedStampIdListenable,
                   _controller.selectedRectIdListenable,
+                  _controller.selectedTextIdListenable,
+                  _controller.editingTextIdListenable,
+                  _controller.textEditChangedListenable,
                 ]),
                 builder: (context, _) {
                   final pageStamps = _controller.stamps
@@ -195,6 +215,14 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                   final selectedStamp = selectedId == null ? null : _findSelected(pageStamps, selectedId);
                   final selectedRectId = _controller.selectedRectIdListenable.value;
                   final selectedRect = selectedRectId == null ? null : _findSelectedRect(selectedRectId);
+                  final selectedTextId = _controller.selectedTextIdListenable.value;
+                  final selectedText = selectedTextId == null ? null : _findSelectedText(selectedTextId);
+                  // The annotation being edited is not the model's: a
+                  // new one is not in it yet, and an existing one holds
+                  // its last committed text there.
+                  final editing = _controller.editingText;
+                  final editingText = editing != null && editing.pageIndex == _page.pageNumber - 1 ? editing : null;
+                  final textAreaDraft = _controller.inFlightTextAreaFor(_page.pageNumber - 1);
 
                   return Stack(
                     clipBehavior: Clip.none,
@@ -255,6 +283,21 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                                   onPointerCancel: (_) => _onRectPointerCancel(),
                                 );
                               }
+                              if (tool == PdfAnnotationTool.text) {
+                                // Raw Listener, as for stamps and
+                                // rectangles. The inline editor is a
+                                // sibling ABOVE it in this Stack, so a
+                                // press inside the editor never reaches
+                                // here: every press that does is a press
+                                // on the score outside the box.
+                                return Listener(
+                                  behavior: HitTestBehavior.opaque,
+                                  onPointerDown: (e) => _onTextPointerDown(e.localPosition),
+                                  onPointerMove: (e) => _onTextPointerMove(e.localPosition),
+                                  onPointerUp: (e) => _onTextPointerUp(e.localPosition),
+                                  onPointerCancel: (_) => _onTextPointerCancel(),
+                                );
+                              }
                               return GestureDetector(
                                 behavior: HitTestBehavior.opaque,
                                 onPanStart: (details) => _onPanStart(tool, details.localPosition),
@@ -285,7 +328,25 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                           id: selectedRect.id,
                           selectionRect: _rectSelectionRect(selectedRect),
                           rotationDeg: selectedRect.rotationDeg,
+                        )
+                      else if (editingText != null)
+                        _buildSelectionOverlay(
+                          id: editingText.id,
+                          selectionRect: _textSelectionRect(editingText),
+                          rotationDeg: editingText.rotationDeg,
+                          editing: true,
+                        )
+                      else if (selectedText != null)
+                        _buildSelectionOverlay(
+                          id: selectedText.id,
+                          selectionRect: _textSelectionRect(selectedText),
+                          rotationDeg: selectedText.rotationDeg,
                         ),
+                      if (textAreaDraft != null) _buildTextAreaDraftOutline(textAreaDraft),
+                      // The one child of this layer that takes pointers
+                      // above the input handler: taps inside it place the
+                      // caret and select text.
+                      if (editingText != null) _buildTextEditor(editingText),
                     ],
                   );
                 },
@@ -314,7 +375,15 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   /// the [Listener] below, which routes them from this layer's own
   /// hit-tests in page-local space, so handles floating outside the
   /// bbox still receive input.
-  Widget _buildSelectionOverlay({required String id, required Rect selectionRect, required double rotationDeg}) {
+  ///
+  /// [editing] strips it down to a thin outline of the box: while a text
+  /// annotation is edited there is nothing to resize, rotate or delete.
+  Widget _buildSelectionOverlay({
+    required String id,
+    required Rect selectionRect,
+    required double rotationDeg,
+    bool editing = false,
+  }) {
     final color = widget.selectedStampInterfaceColor ?? Theme.of(context).colorScheme.primary;
     final iconColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
     final labels = widget.labels;
@@ -344,71 +413,73 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
               Positioned.fill(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    border: Border.all(color: color, width: _kSelectionOutlinePx),
+                    border: Border.all(color: color, width: editing ? _kTextEditOutlinePx : _kSelectionOutlinePx),
                   ),
                 ),
               ),
-              for (final handle in kResizeHandles)
-                () {
-                  final anchor = handleAnchorInLocalFrame(
-                    rect: localRect,
-                    handle: handle,
-                    rotationHandleOffset: _kRotateHandleOffsetPx,
-                  );
-                  return Positioned(
-                    left: anchor.dx - _kHandleScreenPx / 2,
-                    top: anchor.dy - _kHandleScreenPx / 2,
-                    width: _kHandleScreenPx,
-                    height: _kHandleScreenPx,
-                    child: Semantics(
-                      label: labels.labelFor(handle),
-                      button: true,
-                      child: DecoratedBox(decoration: BoxDecoration(color: color)),
-                    ),
-                  );
-                }(),
-              Positioned(
-                left: rotationAnchor.dx - _kRotateHandlePx / 2,
-                top: rotationAnchor.dy - _kRotateHandlePx / 2,
-                width: _kRotateHandlePx,
-                height: _kRotateHandlePx,
-                child: Semantics(
-                  label: labels.rotate,
-                  button: true,
-                  child: Material(
-                    color: color,
-                    shape: const CircleBorder(),
-                    elevation: 2,
-                    child: _upright(rotationDeg, Icon(Icons.refresh, size: 16, color: iconColor)),
-                  ),
-                ),
-              ),
-              // Delete button. Floats outside the bbox at the top-right
-              // corner, diagonally offset from the top-right resize
-              // handle so fingers reaching the corner still hit the
-              // resize handle. Pointer events fall through to the
-              // Listener (the whole group is wrapped in IgnorePointer);
-              // the tap-test lives in _handleStampTap so the tap path
-              // is uniform across all the stamp tool's affordances.
-              Positioned(
-                left: deleteRect.left,
-                top: deleteRect.top,
-                width: deleteRect.width,
-                height: deleteRect.height,
-                child: Semantics(
-                  label: labels.delete,
-                  button: true,
-                  child: Material(
-                    color: color,
-                    shape: const CircleBorder(),
-                    elevation: 2,
-                    child: Tooltip(
-                      message: labels.delete,
-                      child: _upright(rotationDeg, Icon(Icons.delete_outline, size: 16, color: iconColor)),
+              if (!editing) ...[
+                for (final handle in kResizeHandles)
+                  () {
+                    final anchor = handleAnchorInLocalFrame(
+                      rect: localRect,
+                      handle: handle,
+                      rotationHandleOffset: _kRotateHandleOffsetPx,
+                    );
+                    return Positioned(
+                      left: anchor.dx - _kHandleScreenPx / 2,
+                      top: anchor.dy - _kHandleScreenPx / 2,
+                      width: _kHandleScreenPx,
+                      height: _kHandleScreenPx,
+                      child: Semantics(
+                        label: labels.labelFor(handle),
+                        button: true,
+                        child: DecoratedBox(decoration: BoxDecoration(color: color)),
+                      ),
+                    );
+                  }(),
+                Positioned(
+                  left: rotationAnchor.dx - _kRotateHandlePx / 2,
+                  top: rotationAnchor.dy - _kRotateHandlePx / 2,
+                  width: _kRotateHandlePx,
+                  height: _kRotateHandlePx,
+                  child: Semantics(
+                    label: labels.rotate,
+                    button: true,
+                    child: Material(
+                      color: color,
+                      shape: const CircleBorder(),
+                      elevation: 2,
+                      child: _upright(rotationDeg, Icon(Icons.refresh, size: 16, color: iconColor)),
                     ),
                   ),
                 ),
-              ),
+                // Delete button. Floats outside the bbox at the top-right
+                // corner, diagonally offset from the top-right resize
+                // handle so fingers reaching the corner still hit the
+                // resize handle. Pointer events fall through to the
+                // Listener (the whole group is wrapped in IgnorePointer);
+                // the tap-test lives in _handleStampTap so the tap path
+                // is uniform across all the stamp tool's affordances.
+                Positioned(
+                  left: deleteRect.left,
+                  top: deleteRect.top,
+                  width: deleteRect.width,
+                  height: deleteRect.height,
+                  child: Semantics(
+                    label: labels.delete,
+                    button: true,
+                    child: Material(
+                      color: color,
+                      shape: const CircleBorder(),
+                      elevation: 2,
+                      child: Tooltip(
+                        message: labels.delete,
+                        child: _upright(rotationDeg, Icon(Icons.delete_outline, size: 16, color: iconColor)),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -880,6 +951,265 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     _controller.clearRectSelection();
   }
 
+  // ───────────────────────── Text tool: geometry ─────────────────────────
+
+  Size get _pageSizePts => Size(_page.width, _page.height);
+
+  PdfTextAnnotation? _findSelectedText(String id) {
+    for (final t in _controller.texts) {
+      if (t.id == id && t.pageIndex == _page.pageNumber - 1) return t;
+    }
+    return null;
+  }
+
+  /// [text]'s DISPLAY box in page-local pixels. The display box, not the
+  /// stored one, is what is painted, so it is what the gizmo wraps and
+  /// what a tap is tested against.
+  Rect _textLocalRect(PdfTextAnnotation text) {
+    final box = _controller.textDisplayBoxFor(text, pageSize: _pageSizePts).displayRect;
+    final scaleX = _pageRect.width / _page.width;
+    final scaleY = _pageRect.height / _page.height;
+    return Rect.fromLTWH(box.left * scaleX, box.top * scaleY, box.width * scaleX, box.height * scaleY);
+  }
+
+  /// The handle rectangle for [text]: its own bounds, as for a rectangle.
+  Rect _textSelectionRect(PdfTextAnnotation text) => _selectionRect(_textLocalRect(text), _kRectHandlePaddingPx);
+
+  PdfAnnotationHandle? _hitTestTextHandles(PdfTextAnnotation text, Offset local) => hitTestHandles(
+    rect: _textSelectionRect(text),
+    rotationDeg: text.rotationDeg,
+    point: local,
+    hitRadius: _kHandleHitRadiusPx,
+    rotationHandleOffset: _kRotateHandleOffsetPx,
+  );
+
+  bool _textBodyContains(PdfTextAnnotation text, Offset local) =>
+      containsRotated(rect: _textSelectionRect(text), rotationDeg: text.rotationDeg, point: local);
+
+  bool _hitTestTextDeleteButton(PdfTextAnnotation text, Offset local) {
+    final selectionRect = _textSelectionRect(text);
+    final unrotated = unrotatePointToLocal(local, center: selectionRect.center, rotationDeg: text.rotationDeg);
+    return _deleteButtonRectInLocalFrame(selectionRect).contains(unrotated);
+  }
+
+  /// The topmost text annotation the current creator may select whose
+  /// rotated box contains [local], or `null`. A bandmate's text is
+  /// already skipped from the candidates, so an own annotation lying
+  /// under it is still reachable.
+  PdfTextAnnotation? _hitTestSelectableTextBody(Offset local) {
+    for (final text in _controller.selectableTextsForHitTest(_page.pageNumber - 1)) {
+      if (_textBodyContains(text, local)) return text;
+    }
+    return null;
+  }
+
+  /// The live outline of a text area being rubber-banded.
+  Widget _buildTextAreaDraftOutline(Rect draftInPdfSpace) {
+    final color = widget.selectedStampInterfaceColor ?? Theme.of(context).colorScheme.primary;
+    final scaleX = _pageRect.width / _page.width;
+    final scaleY = _pageRect.height / _page.height;
+    return Positioned(
+      key: const Key('annotationTextAreaDraft'),
+      left: draftInPdfSpace.left * scaleX,
+      top: draftInPdfSpace.top * scaleY,
+      width: draftInPdfSpace.width * scaleX,
+      height: draftInPdfSpace.height * scaleY,
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: color, width: _kTextEditOutlinePx),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The inline editor of [editing], placed exactly where the canvas
+  /// paints the committed text: same box, same zoom, same rotation.
+  ///
+  /// The editor is laid out in PDF points, at the width the layout
+  /// function wraps at, and a transform scales it to the page zoom, which
+  /// is how the canvas painter does it. Line breaks therefore cannot
+  /// depend on the zoom, and match the committed rendering.
+  Widget _buildTextEditor(PdfTextAnnotation editing) {
+    final box = _controller.textDisplayBoxFor(editing, pageSize: _pageSizePts);
+    final display = box.displayRect;
+    final scaleX = _pageRect.width / _page.width;
+    final scaleY = _pageRect.height / _page.height;
+    final wrapWidth = textAnnotationWrapWidth(editing, pageSize: _pageSizePts);
+    final cursorWidth = _kTextCaretPx / scaleX;
+
+    // The painter aligns lines inside the box that hugs them; the editor
+    // aligns them inside the full wrap width. Sliding the editor left by
+    // the difference puts every line where the painter puts it.
+    final alignFactor = switch (editing.align) {
+      PdfTextAnnotationAlign.left => 0.0,
+      PdfTextAnnotationAlign.center => 0.5,
+      PdfTextAnnotationAlign.right => 1.0,
+    };
+    final editorLeft = display.left + box.textOffset.dx - (wrapWidth - box.layout.size.width) * alignFactor;
+
+    final centerPx = Offset(display.center.dx * scaleX, display.center.dy * scaleY);
+    final transform = Matrix4.identity()
+      ..translateByDouble(centerPx.dx, centerPx.dy, 0, 1)
+      ..rotateZ(-editing.rotationDeg * math.pi / 180.0)
+      ..translateByDouble(-centerPx.dx, -centerPx.dy, 0, 1)
+      ..translateByDouble(editorLeft * scaleX, display.top * scaleY, 0, 1)
+      ..scaleByDouble(scaleX, scaleY, 1, 1);
+
+    // The editor reaches to the wrap width, which for auto-sized text is
+    // the page's right edge. Only the box itself (and a fingertip of
+    // slop) takes taps: past it, a tap is outside the box and commits.
+    final hitRect = Rect.fromLTWH(
+      display.left - editorLeft,
+      0,
+      display.width,
+      display.height,
+    ).inflate(_kTextEditorHitSlopPx / scaleX);
+
+    return Positioned(
+      left: 0,
+      top: 0,
+      child: Transform(
+        transform: transform,
+        child: SizedBox(
+          width: textEditorWidthFor(wrapWidth, cursorWidth: cursorWidth),
+          height: display.height,
+          child: ClipRect(
+            clipper: _FixedRectClipper(hitRect),
+            child: PdfTextAnnotationEditor(
+              key: Key('annotationTextEditor:${editing.id}'),
+              initialText: editing.text,
+              style: resolveAnnotationTextStyle(editing, _controller.annotationFonts),
+              align: editing.align,
+              cursorWidth: cursorWidth,
+              onChanged: _controller.updateTextEdit,
+              onEscape: _controller.commitTextEdit,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ───────────────────────── Text tool: Listener ─────────────────────────
+
+  void _onTextPointerDown(Offset local) {
+    _pointerDownLocal = local;
+    _dragRecognized = false;
+    _rubberBanding = false;
+    _pendingHandle = null;
+    _textGestureSpent = false;
+
+    // A press on the score while an edit is open is a press outside the
+    // box (one inside it went to the editor). It commits, and that is all
+    // this whole gesture does.
+    if (_controller.editingText != null) {
+      _controller.commitTextEdit();
+      _textGestureSpent = true;
+      return;
+    }
+
+    // Only the SELECTED text annotation can capture a drag. A press
+    // inside an unselected one leaves `_pendingHandle` null and becomes a
+    // new text area.
+    final selectedId = _controller.selectedTextIdListenable.value;
+    if (selectedId == null) return;
+    final selected = _findSelectedText(selectedId);
+    if (selected == null) return;
+    _pendingHandle = _hitTestTextHandles(selected, local);
+  }
+
+  void _onTextPointerMove(Offset local) {
+    final start = _pointerDownLocal;
+    if (start == null || _textGestureSpent) return;
+    final dx = local.dx - start.dx;
+    final dy = local.dy - start.dy;
+
+    if (!_dragRecognized) {
+      if (dx * dx + dy * dy < _kStampDragSlopPx * _kStampDragSlopPx) return;
+      _dragRecognized = true;
+      if (_pendingHandle == null) {
+        // Anchored at the pointer-DOWN point, not where the slop was
+        // crossed.
+        _rubberBanding = true;
+        _controller.startTextDraft(
+          pageIndex: _page.pageNumber - 1,
+          anchorPdfPoint: _toPdfSpace(start),
+          pageSize: _pageSizePts,
+        );
+      }
+      // A drag on a handle or the body of the selected annotation is
+      // consumed: it must never start a rubber band.
+    }
+
+    if (_rubberBanding) _controller.updateTextDraft(_toPdfSpace(local));
+  }
+
+  void _onTextPointerUp(Offset local) {
+    final down = _pointerDownLocal ?? local;
+    if (_textGestureSpent) {
+      // Already committed an edit on the way down.
+    } else if (_rubberBanding) {
+      if (_controller.commitTextDraft() == null) {
+        // Sub-minimum, so not a text area. The slop is 4 screen pixels
+        // and the minimum 8 PDF points, so at low zoom a fingertip tap
+        // lands here. It falls through to the tap precedence at the
+        // pointer-DOWN point, unlike a rectangle's pointer-up point: the
+        // tap point becomes the text's anchor, and that has to be where
+        // the finger landed.
+        _handleTextTap(down);
+      }
+    } else if (!_dragRecognized) {
+      _handleTextTap(down);
+    }
+    _resetTextPointerState();
+  }
+
+  void _onTextPointerCancel() {
+    if (_rubberBanding) _controller.cancelTextDraft();
+    _resetTextPointerState();
+  }
+
+  void _resetTextPointerState() {
+    _rubberBanding = false;
+    _textGestureSpent = false;
+    _resetStampPointerState();
+  }
+
+  /// Tap precedence: the delete button of the selected annotation; then
+  /// one of the user's own text annotations under the tap, which is
+  /// selected, or edited when it already is; then empty space, which
+  /// deselects when something is selected and creates auto-sized text
+  /// only when nothing is.
+  void _handleTextTap(Offset local) {
+    final selectedId = _controller.selectedTextIdListenable.value;
+    if (selectedId != null) {
+      final selected = _findSelectedText(selectedId);
+      if (selected != null && _hitTestTextDeleteButton(selected, local)) {
+        _controller.deleteText(selected.id);
+        return;
+      }
+    }
+
+    final hit = _hitTestSelectableTextBody(local);
+    if (hit != null) {
+      if (hit.id == selectedId) {
+        _controller.beginTextEdit(hit.id, pageSize: _pageSizePts);
+      } else {
+        _controller.selectText(hit.id);
+      }
+      return;
+    }
+
+    // Empty space, or a bandmate's text.
+    if (selectedId != null) {
+      _controller.clearTextSelection();
+      return;
+    }
+    _controller.createTextAt(pageIndex: _page.pageNumber - 1, pdfPoint: _toPdfSpace(local), pageSize: _pageSizePts);
+  }
+
   // ───────────────────────── Other tools: GestureDetector ────────────────
 
   void _onPanStart(PdfAnnotationTool tool, Offset local) {
@@ -912,8 +1242,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         );
       case PdfAnnotationTool.stamp:
       case PdfAnnotationTool.rectangle:
+      case PdfAnnotationTool.text:
       case PdfAnnotationTool.hand:
-        // stamp and rectangle: handled by the Listener branch. hand:
+        // stamp, rectangle and text: handled by a Listener branch. hand:
         // no gesture widget is mounted, so this is unreachable, and is
         // covered for switch exhaustiveness only.
         return;
@@ -934,6 +1265,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         );
       case PdfAnnotationTool.stamp:
       case PdfAnnotationTool.rectangle:
+      case PdfAnnotationTool.text:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -948,6 +1280,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         _controller.endErase();
       case PdfAnnotationTool.stamp:
       case PdfAnnotationTool.rectangle:
+      case PdfAnnotationTool.text:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -962,6 +1295,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         _controller.endErase();
       case PdfAnnotationTool.stamp:
       case PdfAnnotationTool.rectangle:
+      case PdfAnnotationTool.text:
       case PdfAnnotationTool.hand:
         return;
     }
@@ -975,6 +1309,20 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
 
   Offset _toPdfSpace(Offset local) =>
       Offset(local.dx * _page.width / _pageRect.width, local.dy * _page.height / _pageRect.height);
+}
+
+/// Clips to a fixed rect. `ClipRect` clips hit-testing along with
+/// painting, which is the half wanted here.
+class _FixedRectClipper extends CustomClipper<Rect> {
+  const _FixedRectClipper(this.rect);
+
+  final Rect rect;
+
+  @override
+  Rect getClip(Size size) => rect;
+
+  @override
+  bool shouldReclip(_FixedRectClipper oldClipper) => oldClipper.rect != rect;
 }
 
 /// Builds the quadratic-bezier-smoothed [Path] for an ink stroke,
@@ -1266,8 +1614,10 @@ void paintPageAnnotations(
   // The hint is a viewing affordance of the rectangle tool, so both of
   // its gates are read once per paint rather than per entry.
   final hintsVisible =
-      controller.annotationModeListenable.value && controller.currentToolListenable.value == PdfAnnotationTool.rectangle;
+      controller.annotationModeListenable.value &&
+      controller.currentToolListenable.value == PdfAnnotationTool.rectangle;
   final creator = controller.currentCreator;
+  final editingTextId = controller.editingTextIdListenable.value;
   final scaleX = pageRect.width / page.width;
   final scaleY = pageRect.height / page.height;
   canvas.save();
@@ -1295,6 +1645,9 @@ void paintPageAnnotations(
           paintStamp(canvas, entry.stamp, picture, scaleX: scaleX, scaleY: scaleY);
         }
       case PdfTextPaintEntry():
+        // The inline editor is the only rendering of a text annotation
+        // while it is edited: painting it here too would draw it twice.
+        if (entry.text.id == editingTextId) continue;
         paintText(
           canvas,
           entry.text,

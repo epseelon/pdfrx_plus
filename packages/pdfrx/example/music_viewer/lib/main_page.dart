@@ -214,6 +214,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               icon: const Icon(Icons.rectangle_outlined),
               onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.rectangle),
             ),
+            IconButton.filledTonal(
+              tooltip: 'Text',
+              isSelected: tool == PdfAnnotationTool.text,
+              selectedIcon: const Icon(Icons.text_fields),
+              icon: const Icon(Icons.text_fields_outlined),
+              onPressed: () => _controller.setAnnotationTool(PdfAnnotationTool.text),
+            ),
             const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             switch (tool) {
               PdfAnnotationTool.pen => Row(
@@ -275,9 +282,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
               ),
               PdfAnnotationTool.stamp => const SizedBox.shrink(),
               PdfAnnotationTool.rectangle => const SizedBox.shrink(),
+              PdfAnnotationTool.text => const SizedBox.shrink(),
               PdfAnnotationTool.hand => const SizedBox.shrink(),
             },
-            if (tool != PdfAnnotationTool.stamp && tool != PdfAnnotationTool.rectangle)
+            if (tool != PdfAnnotationTool.stamp && tool != PdfAnnotationTool.rectangle && tool != PdfAnnotationTool.text)
               const VerticalDivider(width: 16, thickness: 1, indent: 8, endIndent: 8),
             ValueListenableBuilder<bool>(
               valueListenable: _controller.canUndoListenable,
