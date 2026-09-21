@@ -11,6 +11,7 @@ import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
 import 'pdf_stamp_picture.dart';
+import 'pdf_text_annotation.dart';
 import 'selection_geometry.dart';
 
 export 'selection_geometry.dart' show PdfAnnotationHandle, kMinAnnotationSizePts;
@@ -74,6 +75,13 @@ class PdfAnnotationController extends ChangeNotifier {
   final List<PdfInkAnnotation> _strokes = [];
   final List<PdfStampAnnotation> _stamps = [];
   final List<PdfRectAnnotation> _rects = [];
+
+  /// Text annotations. Until the Text tool lands they are only ever
+  /// imported, held and exported, which is already load-bearing: the
+  /// decoder recognises `pspdfkit/text`, so such an entry no longer
+  /// travels in [_unknowns], and every path below that carries rectangles
+  /// must carry these too or an export silently deletes them.
+  final List<PdfTextAnnotation> _texts = [];
 
   /// Imported entries whose `type` this build does not recognise, held
   /// verbatim so an export puts them back (see
@@ -276,6 +284,9 @@ class PdfAnnotationController extends ChangeNotifier {
   /// Read-only view of the placed rectangle annotations.
   List<PdfRectAnnotation> get rects => List.unmodifiable(_rects);
 
+  /// Read-only view of the text annotations.
+  List<PdfTextAnnotation> get texts => List.unmodifiable(_texts);
+
   /// Read-only view of the attachment store (sha256 → bytes + content
   /// type). Bytes referenced by at least one stamp are emitted under
   /// the document's `attachments` map at export time.
@@ -426,18 +437,19 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replace strokes, stamps, rectangles, unrecognised entries, and
-  /// attachments in a single update. History is cleared, listeners
+  /// Replace strokes, stamps, rectangles, text annotations, unrecognised
+  /// entries, and attachments in a single update. History is cleared, listeners
   /// notified once.
   ///
-  /// [rects] and [unknowns] default to empty so call sites that predate
-  /// them keep compiling; they then replace those sets with nothing,
+  /// [rects], [texts] and [unknowns] default to empty so call sites that
+  /// predate them keep compiling; they then replace those sets with nothing,
   /// which is the right reading of a wholesale replacement.
   void setAllWithStamps({
     required List<PdfInkAnnotation> strokes,
     required List<PdfStampAnnotation> stamps,
     required Map<String, PdfStampAttachment> attachments,
     List<PdfRectAnnotation> rects = const [],
+    List<PdfTextAnnotation> texts = const [],
     List<Map<String, dynamic>> unknowns = const [],
   }) {
     _strokes
@@ -449,6 +461,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _rects
       ..clear()
       ..addAll(rects);
+    _texts
+      ..clear()
+      ..addAll(texts);
     _unknowns
       ..clear()
       ..addAll(unknowns);
@@ -478,7 +493,8 @@ class PdfAnnotationController extends ChangeNotifier {
 
   Set<String> _referencedAttachmentShas() => _stamps.map((s) => s.attachmentSha256).toSet();
 
-  /// Remove all strokes, stamps, rectangles, attachments, selection, and
+  /// Remove all strokes, stamps, rectangles, text annotations,
+  /// attachments, selection, and
   /// pending stamp (the last reset matches the spec's `clearAnnotations`
   /// contract). No-op when everything is already empty / null.
   ///
@@ -489,6 +505,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final hadStrokes = _strokes.isNotEmpty;
     final hadStamps = _stamps.isNotEmpty;
     final hadRects = _rects.isNotEmpty;
+    final hadTexts = _texts.isNotEmpty;
     final hadUnknowns = _unknowns.isNotEmpty;
     final hadAttachments = _attachments.isNotEmpty;
     final hadSelection = _selectedStampId.value != null || _selectedRectId.value != null;
@@ -497,6 +514,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (!hadStrokes &&
         !hadStamps &&
         !hadRects &&
+        !hadTexts &&
         !hadUnknowns &&
         !hadAttachments &&
         !hadSelection &&
@@ -507,6 +525,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _strokes.clear();
     _stamps.clear();
     _rects.clear();
+    _texts.clear();
     // Carried entries belong to the document that was open. Leaving them
     // here would export the previous part's unrecognised annotations into
     // the newly opened one, exactly as a stale rectangle list would.
@@ -546,15 +565,23 @@ class PdfAnnotationController extends ChangeNotifier {
       strokes: decoded.strokes,
       stamps: decoded.stamps,
       rects: decoded.rects,
+      texts: decoded.texts,
       unknowns: decoded.unknowns,
       attachments: decoded.attachments,
     );
   }
 
-  /// Serialize all strokes (and stamps, rectangles, carried unrecognised
-  /// entries + attachments, if any) as an Instant JSON document.
-  String exportJson() =>
-      encodeInstantJson(_strokes, stamps: _stamps, rects: _rects, unknowns: _unknowns, attachments: _attachments);
+  /// Serialize all strokes (and stamps, rectangles, text annotations,
+  /// carried unrecognised entries + attachments, if any) as an Instant
+  /// JSON document.
+  String exportJson() => encodeInstantJson(
+    _strokes,
+    stamps: _stamps,
+    rects: _rects,
+    texts: _texts,
+    unknowns: _unknowns,
+    attachments: _attachments,
+  );
 
   /// The `creatorName` of a carried entry, or null when it names none.
   static String? _unknownCreator(Map<String, dynamic> entry) {
@@ -568,6 +595,7 @@ class PdfAnnotationController extends ChangeNotifier {
         _strokes,
         stamps: _stamps,
         rects: _rects,
+        texts: _texts,
         unknowns: _unknowns,
         attachments: _attachments,
       );
@@ -575,6 +603,7 @@ class PdfAnnotationController extends ChangeNotifier {
     final mineStrokes = _strokes.where((s) => s.creatorName == creator).toList(growable: false);
     final mineStamps = _stamps.where((s) => s.creatorName == creator).toList(growable: false);
     final mineRects = _rects.where((r) => r.creatorName == creator).toList(growable: false);
+    final mineTexts = _texts.where((t) => t.creatorName == creator).toList(growable: false);
     // Carried entries are filtered by `creatorName` exactly as the kinds
     // above are. Exporting every carried entry regardless of author would
     // be worse than dropping them: the caller persists this export as
@@ -587,6 +616,7 @@ class PdfAnnotationController extends ChangeNotifier {
       mineStrokes,
       stamps: mineStamps,
       rects: mineRects,
+      texts: mineTexts,
       unknowns: mineUnknowns,
       attachments: _attachments,
     );
@@ -873,6 +903,7 @@ class PdfAnnotationController extends ChangeNotifier {
       strokes: List<PdfInkAnnotation>.unmodifiable(_strokes),
       stamps: List<PdfStampAnnotation>.unmodifiable(_stamps),
       rects: List<PdfRectAnnotation>.unmodifiable(_rects),
+      texts: List<PdfTextAnnotation>.unmodifiable(_texts),
       attachments: Map<String, PdfStampAttachment>.unmodifiable(_attachments),
     );
   }
@@ -887,6 +918,9 @@ class PdfAnnotationController extends ChangeNotifier {
     _rects
       ..clear()
       ..addAll(snapshot.rects);
+    _texts
+      ..clear()
+      ..addAll(snapshot.texts);
     _attachments
       ..clear()
       ..addAll(snapshot.attachments);
@@ -1646,12 +1680,14 @@ class _AnnotationSnapshot {
     required this.strokes,
     required this.stamps,
     required this.rects,
+    required this.texts,
     required this.attachments,
   });
 
   final List<PdfInkAnnotation> strokes;
   final List<PdfStampAnnotation> stamps;
   final List<PdfRectAnnotation> rects;
+  final List<PdfTextAnnotation> texts;
   final Map<String, PdfStampAttachment> attachments;
 }
 

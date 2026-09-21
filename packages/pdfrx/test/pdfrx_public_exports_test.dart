@@ -13,4 +13,10 @@ void main() {
     expect(PdfAnnotationTool.values, contains(PdfAnnotationTool.highlighter));
     expect(PdfInkAnnotation, isNotNull);
   });
+
+  test('pdfrx exports PdfTextAnnotation and its alignment', () {
+    expect(PdfTextAnnotation, isNotNull);
+    expect(PdfTextAnnotationAlign.values, hasLength(3));
+    expect(kDefaultTextAnnotationFontSize, 18.0);
+  });
 }

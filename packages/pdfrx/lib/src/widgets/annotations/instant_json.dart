@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'pdf_ink_annotation.dart';
 import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
+import 'pdf_text_annotation.dart';
 
 /// Instant JSON document-format URL written into exported documents.
 const String instantJsonFormat = 'https://pspdfkit.com/instant-json/v1';
@@ -19,6 +20,10 @@ const String _imageAnnotationType = 'pspdfkit/image';
 /// type, so a rectangle stays readable by any Instant JSON consumer).
 const String _rectAnnotationType = 'pspdfkit/shape/rectangle';
 
+/// Annotation type identifier for text annotations (the format's native
+/// text type).
+const String _textAnnotationType = 'pspdfkit/text';
+
 /// `strokeColor` emitted for a rectangle that has no fill. The shape
 /// schema requires `strokeColor`, and with `strokeWidth: 0` the value is
 /// never painted, so any hex is schema-valid; a constant keeps the
@@ -26,14 +31,15 @@ const String _rectAnnotationType = 'pspdfkit/shape/rectangle';
 const String _noFillStrokeColor = '#000000';
 
 /// Result of [decodeInstantJson]. Carries ink strokes, rectangles, image
-/// stamps, the entries this build does not recognise, and the attachment
-/// store referenced by stamp and unknown annotations.
+/// stamps, text annotations, the entries this build does not recognise,
+/// and the attachment store referenced by stamp and unknown annotations.
 class DecodedInstantJson {
   const DecodedInstantJson({
     required this.strokes,
     required this.stamps,
     required this.attachments,
     this.rects = const [],
+    this.texts = const [],
     this.unknowns = const [],
   });
 
@@ -47,6 +53,14 @@ class DecodedInstantJson {
 
   /// Decoded rectangles (`pspdfkit/shape/rectangle` entries).
   final List<PdfRectAnnotation> rects;
+
+  /// Decoded text annotations (`pspdfkit/text` entries). Defaults to empty
+  /// so call sites that predate the kind keep compiling.
+  ///
+  /// A consumer that re-encodes a decoded document MUST carry this bucket:
+  /// a `pspdfkit/text` entry no longer travels in [unknowns], so a consumer
+  /// that forwards only the older buckets deletes every text annotation.
+  final List<PdfTextAnnotation> texts;
 
   /// Entries whose `type` this build does not recognise, kept VERBATIM as
   /// their raw JSON maps so they survive a decode/encode round trip.
@@ -79,8 +93,8 @@ Set<String> _attachmentIdsOfUnknowns(List<Map<String, dynamic>> unknowns) {
   return out;
 }
 
-/// Encode ink strokes (and optionally stamps, rectangles + attachments)
-/// as an Instant JSON document.
+/// Encode ink strokes (and optionally stamps, rectangles, text
+/// annotations + attachments) as an Instant JSON document.
 ///
 /// The result is a wrapped document
 /// `{"format": ..., "annotations": [...], "attachments": {...}}` containing
@@ -101,6 +115,7 @@ String encodeInstantJson(
   List<PdfInkAnnotation> annotations, {
   List<PdfStampAnnotation> stamps = const [],
   List<PdfRectAnnotation> rects = const [],
+  List<PdfTextAnnotation> texts = const [],
   List<Map<String, dynamic>> unknowns = const [],
   Map<String, PdfStampAttachment> attachments = const {},
 }) {
@@ -117,6 +132,11 @@ String encodeInstantJson(
   // `buildPageAnnotationPaintSequence`).
   for (final rect in rects) {
     entries.add(_encodeRectEntry(rect));
+  }
+  // Text annotations follow rectangles for the same reason rectangles
+  // follow stamps: every payload that predates the kind keeps its order.
+  for (final text in texts) {
+    entries.add(_encodeTextEntry(text));
   }
   // Unrecognised entries trail the kinds this build understands, for the
   // same reason rectangles do. They are emitted exactly as they were
@@ -210,6 +230,50 @@ Map<String, dynamic> _encodeRectEntry(PdfRectAnnotation a) {
   };
 }
 
+/// The stored entry of [a]: what its modelled fields encode to, with
+/// every raw value the decoder preserved put back over it (see
+/// [PdfTextAnnotation.preservedJson]). A preserved key the model also
+/// emits keeps its position; an unmodelled one is appended.
+Map<String, dynamic> _encodeTextEntry(PdfTextAnnotation a) => {..._encodeTextModel(a), ...a.preservedJson};
+
+Map<String, dynamic> _encodeTextModel(PdfTextAnnotation a) {
+  final r = a.rectInPdfSpace;
+  // The text schema DOES define `rotation` (restricted to 0/90/180/270),
+  // so this follows the stamp encoder, not the rectangle's: the snapped
+  // cardinal in `rotation`, the free angle in the namespaced extension.
+  final freeAngle = _normalizeAngle(a.rotationDeg);
+  // Underline and the sizing mode have no field in the format, so they
+  // travel in the `pdfrx:` namespace. No `backgroundColor`, `borderStyle`,
+  // `callout` or `isFitting` is ever written.
+  return {
+    'v': 1,
+    'type': _textAnnotationType,
+    'id': a.id,
+    'pageIndex': a.pageIndex,
+    'bbox': [_round2(r.left), _round2(r.top), _round2(r.width), _round2(r.height)],
+    'opacity': 1.0,
+    'text': a.text,
+    if (a.fontFamily != null) 'font': a.fontFamily,
+    'fontSize': _wholeAsInt(a.fontSize),
+    'fontStyle': [if (a.bold) 'bold', if (a.italic) 'italic'],
+    'fontColor': colorToHex(a.color),
+    'horizontalAlign': a.align.name,
+    'verticalAlign': 'top',
+    'rotation': _snapAngleToCardinal(freeAngle),
+    'pdfrx:rotation': freeAngle,
+    'pdfrx:underline': a.underline,
+    'pdfrx:autoSize': a.autoSize,
+    'createdAt': _formatTimestamp(a.createdAt),
+    'updatedAt': _formatTimestamp(a.updatedAt),
+    if (a.creatorName != null) 'creatorName': a.creatorName,
+  };
+}
+
+/// A whole [value] as an `int`, so a font size of 18 is written `18` on
+/// every platform (the VM would otherwise write `18.0` where the web
+/// writes `18`). Any other value is returned unchanged.
+num _wholeAsInt(double value) => value.isFinite && value == value.truncateToDouble() ? value.toInt() : value;
+
 double _normalizeAngle(double degrees) {
   final mod = degrees % 360;
   return mod < 0 ? mod + 360 : mod;
@@ -264,8 +328,8 @@ String _formatTimestamp(DateTime t) => t.toUtc().toIso8601String();
 /// array of annotations (`[...]`). Empty / whitespace input returns an
 /// empty list. Malformed JSON throws [FormatException].
 ///
-/// Stamp (`pspdfkit/image`) and rectangle (`pspdfkit/shape/rectangle`)
-/// entries are silently dropped; callers that need them must use
+/// Stamp (`pspdfkit/image`), rectangle (`pspdfkit/shape/rectangle`) and
+/// text (`pspdfkit/text`) entries are silently dropped; callers that need them must use
 /// [decodeInstantJsonFull] instead.
 ///
 /// Entries are silently skipped when:
@@ -292,7 +356,8 @@ List<PdfInkAnnotation> decodeInstantJson(
 }
 
 /// Decode an Instant JSON document into ink strokes, image stamps,
-/// rectangles, unrecognised entries, and the referenced attachment store.
+/// rectangles, text annotations, unrecognised entries, and the referenced
+/// attachment store.
 ///
 /// Same input tolerance as [decodeInstantJson]. Stamp entries whose
 /// `imageAttachmentId` is missing from the document's `attachments` map
@@ -351,6 +416,7 @@ DecodedInstantJson decodeInstantJsonFull(
   final strokes = <PdfInkAnnotation>[];
   final stamps = <PdfStampAnnotation>[];
   final rects = <PdfRectAnnotation>[];
+  final texts = <PdfTextAnnotation>[];
   final unknowns = <Map<String, dynamic>>[];
   for (final entry in entries) {
     if (entry is! Map<String, dynamic>) continue;
@@ -365,6 +431,19 @@ DecodedInstantJson decodeInstantJsonFull(
     } else if (type == _rectAnnotationType) {
       final rect = _decodeRectEntry(entry, pageCount: pageCount);
       if (rect != null) rects.add(rect);
+    } else if (type == _textAnnotationType) {
+      final plainText = _plainTextOf(entry);
+      final id = entry['id'];
+      if (plainText == null || id is! String || id.isEmpty) {
+        // A text entry this build cannot model (rich text, no readable
+        // text, no id). It is CARRIED like any unknown kind, never
+        // dropped: dropping it would delete it for the whole band on the
+        // next save.
+        unknowns.add(entry);
+        continue;
+      }
+      final text = _decodeTextEntry(entry, id: id, text: plainText, pageCount: pageCount);
+      if (text != null) texts.add(text);
     } else {
       // A kind this build does not know. Carried verbatim rather than
       // ignored: see [DecodedInstantJson.unknowns].
@@ -383,6 +462,7 @@ DecodedInstantJson decodeInstantJsonFull(
     strokes: strokes,
     stamps: stamps,
     rects: rects,
+    texts: texts,
     unknowns: unknowns,
     attachments: attachments,
   );
@@ -617,6 +697,141 @@ PdfRectAnnotation? _decodeRectEntry(Map<String, dynamic> entry, {required int pa
     updatedAt: updatedAt,
     creatorName: creatorName,
   );
+}
+
+/// The plain text of a `pspdfkit/text` [entry], or `null` when it has none
+/// this build can read. The format's guide declares `text` as a string and
+/// shows it as `{"format": "plain", "value": "..."}`; both are accepted.
+/// Any other `format` (rich text) is not plain text and is not decoded.
+String? _plainTextOf(Map<String, dynamic> entry) {
+  final text = entry['text'];
+  if (text is String) return text;
+  if (text is Map<String, dynamic> && text['format'] == 'plain') {
+    final value = text['value'];
+    if (value is String) return value;
+  }
+  return null;
+}
+
+PdfTextAnnotation? _decodeTextEntry(
+  Map<String, dynamic> entry, {
+  required String id,
+  required String text,
+  required int pageCount,
+}) {
+  final version = entry['v'];
+  if (version is! int || version < 1) return null;
+  final pageIndex = entry['pageIndex'];
+  if (pageIndex is! int) return null;
+  if (pageIndex < 0 || pageIndex >= pageCount) return null;
+
+  final bbox = entry['bbox'];
+  if (bbox is! List || bbox.length < 4) return null;
+  for (var i = 0; i < 4; i++) {
+    final v = bbox[i];
+    // A non-finite coordinate is malformed too: it has no JSON form, so
+    // it could never be written back.
+    if (v is! num || !v.isFinite) return null;
+  }
+  // The stored box is kept verbatim: the codec has no fonts and never
+  // lays the text out.
+  final rect = Rect.fromLTWH(
+    (bbox[0] as num).toDouble(),
+    (bbox[1] as num).toDouble(),
+    (bbox[2] as num).toDouble(),
+    (bbox[3] as num).toDouble(),
+  );
+
+  final pdfrxRotation = entry['pdfrx:rotation'];
+  final fallbackRotation = entry['rotation'];
+  double rotationDeg;
+  if (pdfrxRotation is num && pdfrxRotation.isFinite) {
+    rotationDeg = pdfrxRotation.toDouble();
+  } else if (fallbackRotation is num && fallbackRotation.isFinite) {
+    rotationDeg = fallbackRotation.toDouble();
+  } else {
+    rotationDeg = 0.0;
+  }
+
+  final font = entry['font'];
+  // Any positive finite size is kept, on the tool's list or not. Anything
+  // else renders at the default, and the stored value is preserved below.
+  final rawFontSize = entry['fontSize'];
+  final fontSize = rawFontSize is num && rawFontSize.isFinite && rawFontSize > 0
+      ? rawFontSize.toDouble()
+      : kDefaultTextAnnotationFontSize;
+  final fontStyle = entry['fontStyle'];
+  final style = fontStyle is List ? fontStyle : const <dynamic>[];
+
+  // Same deterministic Unix-epoch sentinel the other decoders use, NOT
+  // `DateTime.now()`. See [_decodeInkEntry].
+  final createdAt = _parseTimestamp(entry['createdAt']) ?? _epochSentinel;
+  final updatedAt = _parseTimestamp(entry['updatedAt']) ?? createdAt;
+  final rawCreatorName = entry['creatorName'];
+
+  final model = PdfTextAnnotation(
+    id: id,
+    pageIndex: pageIndex,
+    rectInPdfSpace: rect,
+    rotationDeg: rotationDeg,
+    text: text,
+    fontFamily: font is String ? font : null,
+    fontSize: fontSize,
+    color: colorFromHex(entry['fontColor']) ?? const Color(0xFF000000),
+    bold: style.contains('bold'),
+    italic: style.contains('italic'),
+    underline: entry['pdfrx:underline'] == true,
+    align: PdfTextAnnotationAlign.values.asNameMap()[entry['horizontalAlign']] ?? PdfTextAnnotationAlign.left,
+    autoSize: entry['pdfrx:autoSize'] == true,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+    creatorName: rawCreatorName is String ? rawCreatorName : null,
+  );
+
+  // Preserve what this build cannot use. Every stored value that differs
+  // from what [model] encodes to under the same key is kept raw: a key
+  // this build does not model (`backgroundColor`), a value it had to
+  // replace with a default (`fontSize: "big"`, `horizontalAlign:
+  // "justify"`), a form it normalises (`text` as `{format, value}`, an
+  // unrounded `bbox`). [_encodeTextEntry] puts them back, so re-saving an
+  // entry this build did not edit never rewrites it.
+  final encoded = _encodeTextModel(model);
+  final preserved = <String, dynamic>{
+    for (final e in entry.entries)
+      if (!(encoded.containsKey(e.key) && _jsonEquals(encoded[e.key], e.value)) && _isJsonEncodable(e.value))
+        e.key: e.value,
+  };
+  return preserved.isEmpty ? model : model.copyWith(preservedJson: preserved);
+}
+
+/// Deep equality of two decoded-JSON values. Numbers compare by value, so
+/// `18` equals `18.0`: the VM and the web write the same double either way.
+bool _jsonEquals(Object? a, Object? b) {
+  if (a is num && b is num) return a == b;
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_jsonEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (a is Map && b is Map) {
+    if (a.length != b.length) return false;
+    for (final key in a.keys) {
+      if (!b.containsKey(key) || !_jsonEquals(a[key], b[key])) return false;
+    }
+    return true;
+  }
+  return a == b;
+}
+
+/// Whether [value] can be written back by `jsonEncode`. Only a non-finite
+/// number cannot: `1e400` is valid JSON text that parses to infinity.
+bool _isJsonEncodable(Object? value) {
+  if (value is num) return value.isFinite;
+  if (value is List) return value.every(_isJsonEncodable);
+  if (value is Map) return value.values.every(_isJsonEncodable);
+  return true;
 }
 
 /// Deterministic fallback timestamp (Unix epoch 0, UTC) for entries whose
