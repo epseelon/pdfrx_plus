@@ -4,6 +4,7 @@ export 'package:pdfrx_engine/pdfrx_engine.dart';
 export 'src/pdf_document_ref.dart';
 export 'src/pdfrx_flutter.dart';
 export 'src/utils/fixed_overscroll_physics.dart';
+export 'src/widgets/annotations/annotation_text_layout.dart';
 export 'src/widgets/annotations/instant_json.dart';
 export 'src/widgets/annotations/pdf_annotation_controller.dart'
     show PdfAnnotationHandle, PdfAnnotationTool, PdfStampHandle, kMinAnnotationSizePts;

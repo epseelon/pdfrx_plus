@@ -12,6 +12,7 @@ import 'package:pdfrx/src/widgets/annotations/pdf_ink_annotation.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_rect_annotation.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_stamp_annotation.dart';
 import 'package:pdfrx/src/widgets/annotations/pdf_stamp_picture.dart';
+import 'package:pdfrx/src/widgets/annotations/pdf_text_annotation.dart';
 
 PdfInkAnnotation _stroke({
   required PdfInkAnnotationKind kind,
@@ -74,6 +75,16 @@ PdfRectAnnotation _rectAt(
   creatorName: creatorName,
 );
 
+PdfTextAnnotation _textAt(DateTime createdAt, {String id = 'text', int pageIndex = 0}) => PdfTextAnnotation(
+  id: id,
+  pageIndex: pageIndex,
+  rectInPdfSpace: const Rect.fromLTWH(5, 5, 40, 30),
+  rotationDeg: 0,
+  text: 'rit.',
+  createdAt: createdAt,
+  updatedAt: createdAt,
+);
+
 const String _sha = 'sha-test';
 
 /// Minimal [PdfPage] stub. The painter reads only [pageNumber], [width]
@@ -104,16 +115,20 @@ Future<PdfDecodedStampPicture?> _fakeDecoder(Uint8List bytes, String contentType
 /// Paints one page's whole unified sequence, the way the `PdfViewer`
 /// page painter does.
 class _PageTestPainter extends CustomPainter {
-  _PageTestPainter(this.controller);
+  _PageTestPainter(this.controller, {this.pageSize});
 
   final PdfAnnotationController controller;
+
+  /// The page's size in PDF points. Defaults to the painted size, which
+  /// is a zoom of 1.
+  final Size? pageSize;
 
   @override
   void paint(Canvas canvas, Size size) {
     paintPageAnnotations(
       canvas,
       pageRect: Offset.zero & size,
-      page: _FakePdfPage(pageNumber: 1, width: size.width, height: size.height),
+      page: _FakePdfPage(pageNumber: 1, width: (pageSize ?? size).width, height: (pageSize ?? size).height),
       controller: controller,
     );
   }
@@ -129,6 +144,7 @@ Future<PdfAnnotationController> _pumpPage(
   required List<PdfInkAnnotation> strokes,
   required List<PdfStampAnnotation> stamps,
   List<PdfRectAnnotation> rects = const [],
+  List<PdfTextAnnotation> texts = const [],
   PdfAnnotationTool? tool,
   String? creatorName,
 }) async {
@@ -138,6 +154,7 @@ Future<PdfAnnotationController> _pumpPage(
     strokes: strokes,
     stamps: stamps,
     rects: rects,
+    texts: texts,
     attachments: {_sha: PdfStampAttachment(bytes: Uint8List.fromList([1]), contentType: 'image/svg+xml')},
   );
   if (tool != null) controller.enterMode(creatorName: creatorName, tool: tool);
@@ -176,6 +193,8 @@ bool _isDrawPath(Symbol method, List<dynamic> arguments) => method == #drawPath;
 bool _isDrawPicture(Symbol method, List<dynamic> arguments) => method == #drawPicture;
 
 bool _isDrawRect(Symbol method, List<dynamic> arguments) => method == #drawRect;
+
+bool _isDrawParagraph(Symbol method, List<dynamic> arguments) => method == #drawParagraph;
 
 /// The hint outline is the only stroked path a rectangle emits, so a
 /// stroked `drawPath` on a page that carries no ink is the hint.
@@ -402,6 +421,102 @@ void main() {
     });
   });
 
+  group('paintPageAnnotations text in the unified z-order', () {
+    testWidgets('a text annotation created after a rectangle paints over it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 1))],
+        texts: [_textAt(DateTime.utc(2026, 1, 2))],
+      );
+
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawRect)
+          ..something(_isDrawParagraph),
+      );
+    });
+
+    testWidgets('a text annotation created before a rectangle paints under it', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        rects: [_rectAt(DateTime.utc(2026, 1, 2))],
+        texts: [_textAt(DateTime.utc(2026, 1, 1))],
+      );
+
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawParagraph)
+          ..something(_isDrawRect),
+      );
+    });
+
+    testWidgets('a text annotation is painted against strokes and stamps in creation order too', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: [_strokeAt(DateTime.utc(2026, 1, 1), id: 'ink')],
+        stamps: [_stampAt(DateTime.utc(2026, 1, 3))],
+        texts: [_textAt(DateTime.utc(2026, 1, 2))],
+      );
+
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..something(_isDrawPath)
+          ..something(_isDrawParagraph)
+          ..something(_isDrawPicture),
+      );
+    });
+
+    testWidgets('a text annotation anchored to another page is not painted', (tester) async {
+      await _pumpPage(
+        tester,
+        strokes: const [],
+        stamps: const [],
+        texts: [_textAt(DateTime.utc(2026, 1, 1), pageIndex: 1)],
+      );
+
+      expect(find.byType(CustomPaint), isNot(paints..something(_isDrawParagraph)));
+    });
+
+    testWidgets('text is laid out in PDF points and the canvas is scaled to the zoom', (tester) async {
+      final controller = PdfAnnotationController();
+      addTearDown(controller.dispose);
+      controller.setAllWithStamps(
+        strokes: const [],
+        stamps: const [],
+        attachments: const {},
+        texts: [_textAt(DateTime.utc(2026, 1, 1))],
+      );
+
+      // A 50 x 50 pt page shown at 100 x 100: a zoom of 2.
+      await tester.pumpWidget(
+        Center(
+          child: SizedBox(
+            width: 100,
+            height: 100,
+            child: CustomPaint(painter: _PageTestPainter(controller, pageSize: const Size(50, 50))),
+          ),
+        ),
+      );
+
+      // The paragraph lands at the stored top-left IN POINTS, under a
+      // canvas scaled by the zoom, so the layout itself never sees it.
+      expect(
+        find.byType(CustomPaint),
+        paints
+          ..scale(x: 2.0, y: 2.0)
+          ..paragraph(offset: const Offset(5, 5)),
+      );
+      expect(controller.memoizedTextLayoutCount, 1);
+    });
+  });
+
   group('paintPageAnnotations rectangle hint outline', () {
     testWidgets('is drawn on an own rectangle while the rectangle tool is active', (tester) async {
       await _pumpPage(
@@ -468,6 +583,7 @@ void main() {
             PdfInkPaintEntry() => e.stroke.id ?? 'ink@${e.indexInKind}',
             PdfStampPaintEntry() => e.stamp.id,
             PdfRectPaintEntry() => e.rect.id,
+            PdfTextPaintEntry() => e.text.id,
           },
         )
         .toList(growable: false);
@@ -604,6 +720,126 @@ void main() {
         PdfAnnotationPaintKind.ink,
         PdfAnnotationPaintKind.rect,
         PdfAnnotationPaintKind.stamp,
+      ]);
+    });
+
+    test('text is the last paint kind, so every ordinal that existed before it is unchanged', () {
+      expect(PdfAnnotationPaintKind.values, [
+        PdfAnnotationPaintKind.ink,
+        PdfAnnotationPaintKind.rect,
+        PdfAnnotationPaintKind.stamp,
+        PdfAnnotationPaintKind.text,
+      ]);
+    });
+
+    test('a text annotation created after a stroke, a rectangle or a stamp paints over it', () {
+      final early = DateTime.utc(2026, 1, 1);
+      final late = DateTime.utc(2026, 1, 2);
+
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: [_strokeAt(early, id: 'ink')],
+            stamps: const [],
+            texts: [_textAt(late)],
+          ),
+        ),
+        ['ink', 'text'],
+      );
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: const [],
+            stamps: const [],
+            rects: [_rectAt(early)],
+            texts: [_textAt(late)],
+          ),
+        ),
+        ['rect', 'text'],
+      );
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: const [],
+            stamps: [_stampAt(early)],
+            texts: [_textAt(late)],
+          ),
+        ),
+        ['stamp', 'text'],
+      );
+    });
+
+    test('a text annotation created before a stroke, a rectangle or a stamp paints under it', () {
+      final early = DateTime.utc(2026, 1, 1);
+      final late = DateTime.utc(2026, 1, 2);
+
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: [_strokeAt(late, id: 'ink')],
+            stamps: const [],
+            texts: [_textAt(early)],
+          ),
+        ),
+        ['text', 'ink'],
+      );
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: const [],
+            stamps: const [],
+            rects: [_rectAt(late)],
+            texts: [_textAt(early)],
+          ),
+        ),
+        ['text', 'rect'],
+      );
+      expect(
+        idsOf(
+          buildPageAnnotationPaintSequence(
+            pageIndex: 0,
+            strokes: const [],
+            stamps: [_stampAt(late)],
+            texts: [_textAt(early)],
+          ),
+        ),
+        ['text', 'stamp'],
+      );
+    });
+
+    test('a text annotation anchored to another page is not in the sequence', () {
+      final entries = buildPageAnnotationPaintSequence(
+        pageIndex: 0,
+        strokes: const [],
+        stamps: const [],
+        texts: [
+          _textAt(DateTime.utc(2026, 1, 1), id: 'here'),
+          _textAt(DateTime.utc(2026, 1, 1), id: 'there', pageIndex: 1),
+        ],
+      );
+
+      expect(idsOf(entries), ['here']);
+    });
+
+    test('the kind ordinal puts text above a stamp that ties with it on timestamp and id', () {
+      final entries = buildPageAnnotationPaintSequence(
+        pageIndex: 0,
+        strokes: [_strokeAt(_epoch, id: 'same')],
+        stamps: [_stampAt(_epoch, id: 'same')],
+        rects: [_rectAt(_epoch, id: 'same')],
+        texts: [_textAt(_epoch, id: 'same')],
+      );
+
+      expect(entries.map((e) => e.kind).toList(), [
+        PdfAnnotationPaintKind.ink,
+        PdfAnnotationPaintKind.rect,
+        PdfAnnotationPaintKind.stamp,
+        PdfAnnotationPaintKind.text,
       ]);
     });
   });

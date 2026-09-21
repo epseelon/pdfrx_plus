@@ -8,6 +8,7 @@ import 'package:pdfrx_engine/pdfrx_engine.dart';
 import '../pdf_document_ref.dart';
 import '../utils/fixed_overscroll_physics.dart';
 import '../utils/platform.dart';
+import 'annotations/annotation_text_layout.dart';
 import 'annotations/pdf_annotation_overlay_labels.dart';
 import 'annotations/pdf_stamp_definition.dart';
 import 'annotations/pdf_stamp_picture.dart';
@@ -107,6 +108,7 @@ class PdfViewerParams {
     this.selectedStampInterfaceColor,
     this.selectedStampPadding = 0.0,
     this.annotationOverlayLabels = const PdfAnnotationOverlayLabels(),
+    this.annotationFonts = const PdfAnnotationFonts.none(),
     ScrollPhysics? scrollPhysics,
     this.scrollPhysicsScale,
     this.interactionDelegateProvider = const PdfViewerScrollInteractionDelegateProviderInstant(),
@@ -765,6 +767,21 @@ class PdfViewerParams {
   /// that does not localise needs no wiring.
   final PdfAnnotationOverlayLabels annotationOverlayLabels;
 
+  /// The font families text annotations are rendered in, the real styles
+  /// each one ships, and the default family.
+  ///
+  /// This package bundles no font and never names a font file: the host
+  /// app registers the fonts (its `pubspec.yaml`) and declares them here.
+  /// A stored `fontFamily` is resolved against this list; a family that
+  /// is not in it renders in the default family, and bold or italic is
+  /// only requested from a family that declares the real face, so the
+  /// text engine never synthesizes one. Bandmates only see the same line
+  /// breaks if every build passes the same fonts.
+  ///
+  /// Defaults to [PdfAnnotationFonts.none]: the platform's default font,
+  /// upright, regular weight.
+  final PdfAnnotationFonts annotationFonts;
+
   /// Scroll physics for the viewer.
   ///
   /// If null, default InteractiveViewer physics is used on all platforms. This physics clamps to boundaries,
@@ -887,6 +904,7 @@ class PdfViewerParams {
         other.selectedStampInterfaceColor != selectedStampInterfaceColor ||
         other.selectedStampPadding != selectedStampPadding ||
         other.annotationOverlayLabels != annotationOverlayLabels ||
+        other.annotationFonts != annotationFonts ||
         other.scrollPhysics != scrollPhysics ||
         other.interactionDelegateProvider != interactionDelegateProvider ||
         other.sizeDelegateProvider != sizeDelegateProvider ||
@@ -970,6 +988,7 @@ class PdfViewerParams {
         other.selectedStampInterfaceColor == selectedStampInterfaceColor &&
         other.selectedStampPadding == selectedStampPadding &&
         other.annotationOverlayLabels == annotationOverlayLabels &&
+        other.annotationFonts == annotationFonts &&
         other.scrollPhysics == scrollPhysics &&
         other.interactionDelegateProvider == interactionDelegateProvider &&
         other.sizeDelegateProvider == sizeDelegateProvider &&
@@ -1051,6 +1070,7 @@ class PdfViewerParams {
         selectedStampInterfaceColor.hashCode ^
         selectedStampPadding.hashCode ^
         annotationOverlayLabels.hashCode ^
+        annotationFonts.hashCode ^
         scrollPhysics.hashCode ^
         interactionDelegateProvider.hashCode ^
         sizeDelegateProvider.hashCode ^

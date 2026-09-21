@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
 import 'annotation_paint_sequence.dart';
+import 'annotation_text_layout.dart';
 import 'pdf_annotation_controller.dart';
 import 'pdf_annotation_overlay_labels.dart';
 import 'pdf_ink_annotation.dart';
@@ -12,6 +13,7 @@ import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
 import 'pdf_stamp_definition.dart';
 import 'pdf_stamp_picture.dart';
+import 'pdf_text_annotation.dart';
 import 'selection_geometry.dart';
 
 /// Internal per-page input and overlay layer for the annotations
@@ -1191,6 +1193,36 @@ void paintStamp(
   canvas.restore();
 }
 
+/// Paints [text] onto [canvas] inside its display [box], scaling from PDF
+/// point space by [scaleX]/[scaleY].
+///
+/// The text is laid out once, in PDF points, and the canvas is scaled to
+/// the page zoom around it: the line breaks therefore cannot depend on
+/// the zoom, and the memoized layout survives every zoom change. The
+/// whole layout is painted, never clipped to the box. Rotation is about
+/// the display box's centre, counter-clockwise, as for a stamp.
+@visibleForTesting
+void paintText(
+  Canvas canvas,
+  PdfTextAnnotation text,
+  PdfTextDisplayBox box, {
+  required double scaleX,
+  required double scaleY,
+}) {
+  if (scaleX <= 0 || scaleY <= 0) return;
+  final rect = box.displayRect;
+  canvas.save();
+  canvas.scale(scaleX, scaleY);
+  if (text.rotationDeg != 0) {
+    final center = rect.center;
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(-text.rotationDeg * math.pi / 180.0);
+    canvas.translate(-center.dx, -center.dy);
+  }
+  box.layout.painter.paint(canvas, rect.topLeft + box.textOffset);
+  canvas.restore();
+}
+
 /// Paints every committed annotation anchored to [page] onto [canvas],
 /// positioned and clipped to [pageRect], followed by any in-flight
 /// stroke.
@@ -1262,6 +1294,14 @@ void paintPageAnnotations(
         } else {
           paintStamp(canvas, entry.stamp, picture, scaleX: scaleX, scaleY: scaleY);
         }
+      case PdfTextPaintEntry():
+        paintText(
+          canvas,
+          entry.text,
+          controller.textDisplayBoxFor(entry.text, pageSize: Size(page.width, page.height)),
+          scaleX: scaleX,
+          scaleY: scaleY,
+        );
     }
   }
   for (final stroke in inFlight) {

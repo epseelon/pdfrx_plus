@@ -1,6 +1,7 @@
 import 'pdf_ink_annotation.dart';
 import 'pdf_rect_annotation.dart';
 import 'pdf_stamp_annotation.dart';
+import 'pdf_text_annotation.dart';
 
 /// Annotation kind, used as the third key of the unified paint order.
 ///
@@ -18,6 +19,11 @@ enum PdfAnnotationPaintKind {
 
   /// A [PdfStampAnnotation].
   stamp,
+
+  /// A [PdfTextAnnotation]. Appended last, so the ordinals of the kinds
+  /// that shipped before it, and with them every existing order, are
+  /// unchanged.
+  text,
 }
 
 /// One step of a page's unified paint sequence: a single committed
@@ -100,6 +106,25 @@ final class PdfStampPaintEntry extends PdfAnnotationPaintEntry {
   String get sortId => stamp.id;
 }
 
+/// A text annotation's step in the sequence.
+final class PdfTextPaintEntry extends PdfAnnotationPaintEntry {
+  /// Wraps [text], which sits at [indexInKind] of the controller's text
+  /// annotation list.
+  const PdfTextPaintEntry(this.text, {required super.indexInKind});
+
+  /// The text annotation to paint.
+  final PdfTextAnnotation text;
+
+  @override
+  PdfAnnotationPaintKind get kind => PdfAnnotationPaintKind.text;
+
+  @override
+  DateTime get createdAt => text.createdAt;
+
+  @override
+  String get sortId => text.id;
+}
+
 /// Orders two paint entries so that the one created later paints over
 /// the one created earlier, whatever their kinds.
 ///
@@ -137,7 +162,7 @@ int comparePaintEntries(PdfAnnotationPaintEntry a, PdfAnnotationPaintEntry b) {
 /// Every committed annotation anchored to [pageIndex], as the one
 /// creation-ordered sequence the page painter walks, earliest first.
 ///
-/// [strokes], [rects] and [stamps] are the controller's own lists; an
+/// [strokes], [rects], [stamps] and [texts] are the controller's own lists; an
 /// entry's position in them becomes its
 /// [PdfAnnotationPaintEntry.indexInKind], so the result is reproducible
 /// for identical inputs.
@@ -146,6 +171,7 @@ List<PdfAnnotationPaintEntry> buildPageAnnotationPaintSequence({
   required List<PdfInkAnnotation> strokes,
   required List<PdfStampAnnotation> stamps,
   List<PdfRectAnnotation> rects = const [],
+  List<PdfTextAnnotation> texts = const [],
 }) {
   final entries = <PdfAnnotationPaintEntry>[];
   for (var i = 0; i < strokes.length; i++) {
@@ -159,6 +185,10 @@ List<PdfAnnotationPaintEntry> buildPageAnnotationPaintSequence({
   for (var i = 0; i < stamps.length; i++) {
     if (stamps[i].pageIndex != pageIndex) continue;
     entries.add(PdfStampPaintEntry(stamps[i], indexInKind: i));
+  }
+  for (var i = 0; i < texts.length; i++) {
+    if (texts[i].pageIndex != pageIndex) continue;
+    entries.add(PdfTextPaintEntry(texts[i], indexInKind: i));
   }
   entries.sort(comparePaintEntries);
   return entries;

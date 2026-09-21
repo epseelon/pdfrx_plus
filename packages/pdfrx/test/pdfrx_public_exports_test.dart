@@ -19,4 +19,16 @@ void main() {
     expect(PdfTextAnnotationAlign.values, hasLength(3));
     expect(kDefaultTextAnnotationFontSize, 18.0);
   });
+
+  test('pdfrx exports the text layout seam and the font declaration', () {
+    expect(layoutAnnotationText, isNotNull);
+    expect(PdfAnnotationFontStyle.values, hasLength(4));
+    expect(
+      const PdfViewerParams(
+        annotationFonts: PdfAnnotationFonts(families: [PdfAnnotationFontFamily('Serif')], defaultFamily: 'Serif'),
+      ).annotationFonts.resolve('Unknown')?.name,
+      'Serif',
+    );
+    expect(const PdfViewerParams().annotationFonts, const PdfAnnotationFonts.none());
+  });
 }

@@ -332,6 +332,7 @@ class _PdfViewerState extends State<PdfViewer>
   void initState() {
     super.initState();
     SemanticsBinding.instance.addSemanticsEnabledListener(_onSemanticsEnabledChanged);
+    PaintingBinding.instance.systemFonts.addListener(_onSystemFontsChanged);
     pdfrxFlutterInitialize();
     _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
     _widgetUpdated(null);
@@ -373,6 +374,20 @@ class _PdfViewerState extends State<PdfViewer>
         widget.params.stampPictureDecoder ?? decodeStampPictureWithVectorGraphics;
   }
 
+  /// Pushes the params' font set into the annotation controller, which
+  /// owns the memoized text layouts, for the reason and on the schedule
+  /// of [_syncStampPictureDecoder]. The set compares by value, so a
+  /// rebuilt-but-equal one keeps every layout.
+  void _syncAnnotationFonts() {
+    _annotationController?.annotationFonts = widget.params.annotationFonts;
+  }
+
+  /// A font that finishes loading changes how text measures without
+  /// changing any annotation, so the memoized text layouts have to go.
+  void _onSystemFontsChanged() {
+    _annotationController?.invalidateTextLayouts();
+  }
+
   /// `true` when annotation mode is on AND the active tool captures
   /// input (everything except [PdfAnnotationTool.hand]). The shared gate
   /// for every navigation/pan/zoom suppression in this widget.
@@ -395,6 +410,9 @@ class _PdfViewerState extends State<PdfViewer>
     _widgetUpdated(oldWidget);
     if (widget.params.stampPictureDecoder != oldWidget.params.stampPictureDecoder) {
       _syncStampPictureDecoder();
+    }
+    if (widget.params.annotationFonts != oldWidget.params.annotationFonts) {
+      _syncAnnotationFonts();
     }
     if (widget.params.interactionDelegateProvider != oldWidget.params.interactionDelegateProvider) {
       _updateInteractionDelegate();
@@ -556,6 +574,7 @@ class _PdfViewerState extends State<PdfViewer>
   @override
   void dispose() {
     SemanticsBinding.instance.removeSemanticsEnabledListener(_onSemanticsEnabledChanged);
+    PaintingBinding.instance.systemFonts.removeListener(_onSystemFontsChanged);
     _interactionDelegate?.dispose();
     _sizeDelegate?.dispose();
     _zoomStepsDelegate?.dispose();
@@ -5355,6 +5374,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       _annotationController.stampDragChangedListenable.addListener(__state!._onAnnotationContentChanged);
       _annotationController.stampPicturesChangedListenable.addListener(__state!._onAnnotationContentChanged);
       __state!._syncStampPictureDecoder();
+      __state!._syncAnnotationFonts();
     }
   }
 

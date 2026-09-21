@@ -1,10 +1,12 @@
 import 'dart:math' as math;
-import 'dart:ui';
+import 'dart:ui' hide TextStyle;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart' show TextStyle;
 
 import 'annotation_paint_sequence.dart';
+import 'annotation_text_layout.dart';
 import 'instant_json.dart';
 import 'pdf_ink_annotation.dart';
 import 'pdf_rect_annotation.dart';
@@ -107,6 +109,9 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<String?> _selectedRectId = ValueNotifier<String?>(null);
   final PdfStampPictureCache _stampPictures = PdfStampPictureCache();
   final Map<int, List<PdfAnnotationPaintEntry>> _paintSequences = <int, List<PdfAnnotationPaintEntry>>{};
+  final Map<String, _MemoizedTextLayout> _textLayouts = <String, _MemoizedTextLayout>{};
+  PdfAnnotationFonts _annotationFonts = const PdfAnnotationFonts.none();
+  PdfAnnotationTextLayouter _textLayouter = layoutAnnotationText;
   final List<_AnnotationSnapshot> _undoStack = [];
   final List<_AnnotationSnapshot> _redoStack = [];
   final ValueNotifier<bool> _canUndo = ValueNotifier<bool>(false);
@@ -275,8 +280,117 @@ class PdfAnnotationController extends ChangeNotifier {
   /// draws it last, on top.
   List<PdfAnnotationPaintEntry> paintSequenceForPage(int pageIndex) => _paintSequences.putIfAbsent(
     pageIndex,
-    () => buildPageAnnotationPaintSequence(pageIndex: pageIndex, strokes: _strokes, stamps: _stamps, rects: _rects),
+    () => buildPageAnnotationPaintSequence(
+      pageIndex: pageIndex,
+      strokes: _strokes,
+      stamps: _stamps,
+      rects: _rects,
+      texts: _texts,
+    ),
   );
+
+  /// The font families text annotations resolve their stored family name
+  /// against, and the default one.
+  ///
+  /// Sourced by the `PdfViewer` from `PdfViewerParams.annotationFonts`,
+  /// the way [stampPictureDecoder] is and for the same reason. Compared
+  /// by value: re-setting an equal set keeps every memoized layout, a
+  /// different one drops them all and repaints.
+  PdfAnnotationFonts get annotationFonts => _annotationFonts;
+  set annotationFonts(PdfAnnotationFonts value) {
+    if (value == _annotationFonts) return;
+    _annotationFonts = value;
+    invalidateTextLayouts();
+  }
+
+  /// Replaces the layout seam, so a test can count the calls that reach
+  /// it or stand in for a device whose fonts measure differently.
+  @visibleForTesting
+  set textLayouter(PdfAnnotationTextLayouter value) {
+    _textLayouter = value;
+    _clearTextLayouts();
+  }
+
+  /// How many annotations currently hold a memoized layout.
+  @visibleForTesting
+  int get memoizedTextLayoutCount => _textLayouts.length;
+
+  /// Drops every memoized text layout and repaints. For what changes how
+  /// text measures without changing any annotation: the font set, or a
+  /// font that finished loading.
+  void invalidateTextLayouts() {
+    _clearTextLayouts();
+    notifyListeners();
+  }
+
+  void _clearTextLayouts() {
+    for (final memo in _textLayouts.values) {
+      memo.dispose();
+    }
+    _textLayouts.clear();
+  }
+
+  /// Where [text] is painted on a page of [pageSize] (PDF points): its
+  /// display box, derived from the stored box with this device's
+  /// metrics, and the laid-out text.
+  ///
+  /// The display box is never written back into
+  /// [PdfTextAnnotation.rectInPdfSpace] from here. Rendering is not an
+  /// edit: an export after a mere paint re-emits the stored box, so a
+  /// device whose metrics differ by a fraction of a point never rewrites
+  /// an element it did not touch.
+  ///
+  /// Memoized per annotation id. Laying text out is the expensive part
+  /// and reruns only when the text, the resolved style, the alignment or
+  /// the wrap width changed; the box arithmetic on top of it also reruns
+  /// when the stored box, the rotation, the sizing mode or the page size
+  /// did.
+  PdfTextDisplayBox textDisplayBoxFor(PdfTextAnnotation text, {required Size pageSize}) {
+    final style = resolveAnnotationTextStyle(text, _annotationFonts);
+    final wrapWidth = textAnnotationWrapWidth(text, pageSize: pageSize);
+    var memo = _textLayouts[text.id];
+    if (memo == null ||
+        memo.text != text.text ||
+        memo.style != style ||
+        memo.align != text.align ||
+        memo.wrapWidth != wrapWidth) {
+      memo?.dispose();
+      memo = _textLayouts[text.id] = _MemoizedTextLayout(
+        text: text.text,
+        style: style,
+        align: text.align,
+        wrapWidth: wrapWidth,
+        layout: _textLayouter(text: text.text, style: style, align: text.align, wrapWidth: wrapWidth),
+      );
+    }
+    final box = memo.box;
+    if (box != null &&
+        memo.storedRect == text.rectInPdfSpace &&
+        memo.rotationDeg == text.rotationDeg &&
+        memo.autoSize == text.autoSize &&
+        memo.pageSize == pageSize) {
+      return box;
+    }
+    memo
+      ..storedRect = text.rectInPdfSpace
+      ..rotationDeg = text.rotationDeg
+      ..autoSize = text.autoSize
+      ..pageSize = pageSize;
+    return memo.box = computeTextDisplayBox(annotation: text, pageSize: pageSize, layout: memo.layout);
+  }
+
+  /// Forgets the layouts of annotations that are no longer held. Cheap
+  /// enough to run with every content change: it walks the memo, which is
+  /// empty until a text annotation has been painted.
+  void _pruneTextLayouts() {
+    if (_textLayouts.isEmpty) return;
+    final live = {for (final t in _texts) t.id};
+    _textLayouts.removeWhere((id, memo) {
+      if (live.contains(id)) return false;
+      memo.dispose();
+      return true;
+    });
+  }
 
   /// Read-only view of the placed stamp annotations.
   List<PdfStampAnnotation> get stamps => List.unmodifiable(_stamps);
@@ -1553,6 +1667,7 @@ class PdfAnnotationController extends ChangeNotifier {
   @override
   void notifyListeners() {
     _paintSequences.clear();
+    _pruneTextLayouts();
     super.notifyListeners();
   }
 
@@ -1620,8 +1735,35 @@ class PdfAnnotationController extends ChangeNotifier {
     _canUndo.dispose();
     _canRedo.dispose();
     _stampPictures.dispose();
+    _clearTextLayouts();
     super.dispose();
   }
+}
+
+/// One annotation's memoized layout, the inputs it was laid out from, and
+/// the display box last derived from it.
+class _MemoizedTextLayout {
+  _MemoizedTextLayout({
+    required this.text,
+    required this.style,
+    required this.align,
+    required this.wrapWidth,
+    required this.layout,
+  });
+
+  final String text;
+  final TextStyle style;
+  final PdfTextAnnotationAlign align;
+  final double wrapWidth;
+  final PdfAnnotationTextLayout layout;
+
+  Rect? storedRect;
+  double? rotationDeg;
+  bool? autoSize;
+  Size? pageSize;
+  PdfTextDisplayBox? box;
+
+  void dispose() => layout.dispose();
 }
 
 DateTime _defaultClock() => DateTime.now().toUtc();

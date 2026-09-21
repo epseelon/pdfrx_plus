@@ -53,6 +53,18 @@ enum PageStepOutcome {
   return (outcome: PageStepOutcome.goToPage, page: target);
 }
 
+/// The font families this example renders text annotations in.
+///
+/// The example bundles no font, so it declares the one family the
+/// Material theme already asks for, with its regular face only: the
+/// viewer requests bold or italic solely from a family that declares the
+/// real face, so nothing here is ever synthesized. An app that shares
+/// annotations between devices bundles its fonts and lists them instead.
+const PdfAnnotationFonts _annotationFonts = PdfAnnotationFonts(
+  families: [PdfAnnotationFontFamily('Roboto')],
+  defaultFamily: 'Roboto',
+);
+
 class MainPage extends StatefulWidget {
   const MainPage({
     required this.documents,
@@ -381,6 +393,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   maxScale: 8,
                   scrollPhysics: PdfViewerParams.getScrollPhysics(context),
                   pageTransition: PageTransition.discrete,
+                  annotationFonts: _annotationFonts,
                   stampCategories: _stampCategories,
                   stampImageBuilder: _stampCategories == null ? null : stampImageBuilder,
                   layoutPages: _twoPageMode ? _layoutTwoPages : _layoutSinglePage,
