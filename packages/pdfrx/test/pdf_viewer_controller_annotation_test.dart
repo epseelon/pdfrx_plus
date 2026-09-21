@@ -65,4 +65,28 @@ void main() {
     expect(controller.annotationHighlighterColor, const Color(0xFF00BFFF));
     expect(controller.annotationHighlighterWidth, 16.0);
   });
+
+  test(
+    'the armed text style is readable pre-mount, survives a mode cycle and is an enterAnnotationMode override',
+    () async {
+      final controller = PdfViewerController();
+      const bold = PdfTextAnnotationStyle(fontFamily: 'Inter', bold: true);
+      expect(controller.annotationTextStyle, const PdfTextAnnotationStyle());
+
+      var bumps = 0;
+      controller.annotationTextStyleListenable.addListener(() => bumps++);
+      controller.setAnnotationTextStyle(bold);
+      expect(controller.annotationTextStyle, bold);
+      expect(bumps, 1);
+
+      await controller.enterAnnotationMode(creatorName: 'alice');
+      await controller.exitAnnotationMode();
+      await controller.enterAnnotationMode(creatorName: 'alice');
+      expect(controller.annotationTextStyle, bold, reason: 'sticky for the session');
+
+      const big = PdfTextAnnotationStyle(fontSize: 64);
+      await controller.enterAnnotationMode(creatorName: 'alice', textStyle: big);
+      expect(controller.annotationTextStyle, big);
+    },
+  );
 }

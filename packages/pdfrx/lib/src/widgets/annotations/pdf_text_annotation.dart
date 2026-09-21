@@ -1,5 +1,7 @@
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
+
 /// Horizontal alignment of the lines of a [PdfTextAnnotation] inside its
 /// box. Maps to Instant JSON's `horizontalAlign`.
 enum PdfTextAnnotationAlign { left, center, right }
@@ -7,6 +9,77 @@ enum PdfTextAnnotationAlign { left, center, right }
 /// Font size, in PDF points, a text annotation takes when its stored
 /// `fontSize` is missing or unusable.
 const double kDefaultTextAnnotationFontSize = 18.0;
+
+/// The style of a [PdfTextAnnotation]. It applies to the whole
+/// annotation: one font, one size, one colour, one bold state, one italic
+/// state, one underline state, one alignment.
+///
+/// [bold] and [italic] are what the user ASKED for, not what is drawn: a
+/// family that lacks the face renders without it (see
+/// `resolveAnnotationTextStyle`) and the flag is kept, so it shows again
+/// under a family that has the face.
+@immutable
+class PdfTextAnnotationStyle {
+  const PdfTextAnnotationStyle({
+    this.fontFamily,
+    this.fontSize = kDefaultTextAnnotationFontSize,
+    this.color = const Color(0xFF000000),
+    this.bold = false,
+    this.italic = false,
+    this.underline = false,
+    this.align = PdfTextAnnotationAlign.left,
+  });
+
+  /// Font family NAME, or `null` for the host app's default family.
+  final String? fontFamily;
+
+  /// Font size in PDF points.
+  final double fontSize;
+
+  final Color color;
+  final bool bold;
+  final bool italic;
+  final bool underline;
+  final PdfTextAnnotationAlign align;
+
+  PdfTextAnnotationStyle copyWith({
+    String? fontFamily,
+    double? fontSize,
+    Color? color,
+    bool? bold,
+    bool? italic,
+    bool? underline,
+    PdfTextAnnotationAlign? align,
+  }) => PdfTextAnnotationStyle(
+    fontFamily: fontFamily ?? this.fontFamily,
+    fontSize: fontSize ?? this.fontSize,
+    color: color ?? this.color,
+    bold: bold ?? this.bold,
+    italic: italic ?? this.italic,
+    underline: underline ?? this.underline,
+    align: align ?? this.align,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PdfTextAnnotationStyle &&
+          other.fontFamily == fontFamily &&
+          other.fontSize == fontSize &&
+          other.color == color &&
+          other.bold == bold &&
+          other.italic == italic &&
+          other.underline == underline &&
+          other.align == align;
+
+  @override
+  int get hashCode => Object.hash(fontFamily, fontSize, color, bold, italic, underline, align);
+
+  @override
+  String toString() =>
+      'PdfTextAnnotationStyle($fontFamily, $fontSize, $color, '
+      'bold: $bold, italic: $italic, underline: $underline, $align)';
+}
 
 /// Text annotation laid over a PDF page.
 ///
@@ -112,6 +185,30 @@ class PdfTextAnnotation {
   /// every field it is given a new value for, so an edit is never
   /// silently reverted on save by the stored value it replaced.
   final Map<String, dynamic> preservedJson;
+
+  /// The style fields, as one value.
+  PdfTextAnnotationStyle get style => PdfTextAnnotationStyle(
+    fontFamily: fontFamily,
+    fontSize: fontSize,
+    color: color,
+    bold: bold,
+    italic: italic,
+    underline: underline,
+    align: align,
+  );
+
+  /// Returns a copy restyled to [style]. Only the fields that differ are
+  /// replaced, so a restyle retires the preserved raw value of what the
+  /// user really changed and of nothing else (see [copyWith]).
+  PdfTextAnnotation withStyle(PdfTextAnnotationStyle style) => copyWith(
+    fontFamily: style.fontFamily != fontFamily ? style.fontFamily : null,
+    fontSize: style.fontSize != fontSize ? style.fontSize : null,
+    color: style.color != color ? style.color : null,
+    bold: style.bold != bold ? style.bold : null,
+    italic: style.italic != italic ? style.italic : null,
+    underline: style.underline != underline ? style.underline : null,
+    align: style.align != align ? style.align : null,
+  );
 
   /// Returns a copy of this annotation with the given fields replaced.
   /// Fields not supplied retain the original value. Unless

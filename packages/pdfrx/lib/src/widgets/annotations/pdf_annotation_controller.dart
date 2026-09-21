@@ -110,6 +110,9 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<double> _highlighterWidth = ValueNotifier<double>(12.0);
   final ValueNotifier<double> _eraserRadius = ValueNotifier<double>(10.0);
   final ValueNotifier<Color> _rectFillColor = ValueNotifier<Color>(kDefaultRectFillColor);
+  final ValueNotifier<PdfTextAnnotationStyle> _textStyle = ValueNotifier<PdfTextAnnotationStyle>(
+    const PdfTextAnnotationStyle(),
+  );
   final ValueNotifier<PdfStampDefinition?> _pendingStamp = ValueNotifier<PdfStampDefinition?>(null);
   final ValueNotifier<String?> _selectedStampId = ValueNotifier<String?>(null);
   final ValueNotifier<String?> _selectedRectId = ValueNotifier<String?>(null);
@@ -235,6 +238,16 @@ class PdfAnnotationController extends ChangeNotifier {
   /// exposes no opacity control. See [rectFillColorListenable] for
   /// change notifications.
   Color get rectFillColor => _rectFillColor.value;
+
+  /// The armed text style: what the Text tool's style controls show and
+  /// what the next text annotation is created with. Selecting a text
+  /// annotation loads its style here. Persists across `enterMode` /
+  /// `exitMode` cycles, not across app sessions.
+  ValueListenable<PdfTextAnnotationStyle> get textStyleListenable => _textStyle;
+
+  /// Current armed text style value. See [textStyleListenable] for
+  /// change notifications.
+  PdfTextAnnotationStyle get textStyle => _textStyle.value;
 
   /// The stamp library entry currently armed for placement, or `null`
   /// when no stamp is pending. While non-null and the active tool is
@@ -475,12 +488,47 @@ class PdfAnnotationController extends ChangeNotifier {
     _rectFillColor.value = value;
   }
 
+  /// Replace the text style. Idempotent.
+  ///
+  /// While an edit is in progress the text being typed is restyled live:
+  /// the edit stays open, and the restyle is part of that session's
+  /// single undo step, taken at [commitTextEdit]. Otherwise the selected
+  /// text annotation, when there is one, is restyled in one undo step.
+  /// With neither, this only arms the style for the next [createTextAt]
+  /// or [commitTextDraft].
+  ///
+  /// A restyle is a mutation, so the display box is written back, on the
+  /// page size the layer registered for the annotation's page.
+  void setTextStyle(PdfTextAnnotationStyle value) {
+    if (_textStyle.value == value) return;
+    _textStyle.value = value;
+
+    final session = _textEdit;
+    if (session != null) {
+      session.working = session.working.withStyle(value);
+      _textEditTick.value++;
+      _textEditCaretTick.value++;
+      return;
+    }
+
+    final selectedId = _selectedTextId.value;
+    final selected = selectedId == null ? null : _textById(selectedId);
+    if (selected == null || !_ownsText(selected) || selected.style == value) return;
+    _pushUndoSnapshot();
+    final pageSize = _pageLayouts[selected.pageIndex]?.pageSize;
+    _replaceSelectedText((t) {
+      final restyled = t.withStyle(value).copyWith(updatedAt: _defaultClock());
+      return pageSize == null ? restyled : _withDisplayBox(restyled, pageSize);
+    });
+    notifyListeners();
+  }
+
   /// Enter annotation drawing mode.
   ///
   /// Idempotent — calling while mode is already `true` does not re-fire
   /// the mode listener. Any non-null override values ([tool],
   /// [strokeColor], [strokeWidth], [highlighterColor], [highlighterWidth],
-  /// [eraserRadius], [rectFillColor]) are applied through the matching setters; null
+  /// [eraserRadius], [rectFillColor], [textStyle]) are applied through the matching setters; null
   /// overrides keep the previously-set value (the controller remembers
   /// tool/color/thickness across mode toggles).
   ///
@@ -503,6 +551,7 @@ class PdfAnnotationController extends ChangeNotifier {
     double? highlighterWidth,
     double? eraserRadius,
     Color? rectFillColor,
+    PdfTextAnnotationStyle? textStyle,
   }) {
     _currentCreator = creatorName;
     if (tool != null) _toolListenable.value = tool;
@@ -512,6 +561,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (highlighterWidth != null) setHighlighterWidth(highlighterWidth);
     if (eraserRadius != null) setEraserRadius(eraserRadius);
     if (rectFillColor != null) setRectFillColor(rectFillColor);
+    if (textStyle != null) setTextStyle(textStyle);
     if (_modeListenable.value) return;
     _undoStack.clear();
     _redoStack.clear();
@@ -1085,8 +1135,12 @@ class PdfAnnotationController extends ChangeNotifier {
       _selectedRectId.value = null;
     }
     final selectedTextId = _selectedTextId.value;
-    if (selectedTextId != null && !_texts.any((t) => t.id == selectedTextId)) {
-      _selectedTextId.value = null;
+    final selectedText = selectedTextId == null ? null : _textById(selectedTextId);
+    if (selectedText == null) {
+      if (selectedTextId != null) _selectedTextId.value = null;
+    } else {
+      // An undone restyle: the style controls follow the selection.
+      _textStyle.value = selectedText.style;
     }
   }
 
@@ -1799,6 +1853,9 @@ class PdfAnnotationController extends ChangeNotifier {
     clearStampSelection();
     clearRectSelection();
     _selectedTextId.value = id;
+    // The style controls now show this annotation's style, and the next
+    // annotation is created in it.
+    _textStyle.value = text.style;
   }
 
   PdfTextAnnotation? _textById(String id) {
@@ -1929,6 +1986,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_textEdit != null) return null;
     final now = (clock ?? _defaultClock)();
     final id = (idGenerator ?? _defaultIdGenerator)();
+    final armed = _textStyle.value;
     clearStampSelection();
     clearRectSelection();
     clearTextSelection();
@@ -1942,7 +2000,13 @@ class PdfAnnotationController extends ChangeNotifier {
           rectInPdfSpace: rect,
           rotationDeg: 0,
           text: '',
-          fontFamily: _annotationFonts.defaultFamily,
+          fontFamily: armed.fontFamily ?? _annotationFonts.defaultFamily,
+          fontSize: armed.fontSize,
+          color: armed.color,
+          bold: armed.bold,
+          italic: armed.italic,
+          underline: armed.underline,
+          align: armed.align,
           autoSize: autoSize,
           createdAt: now,
           updatedAt: now,
@@ -2022,7 +2086,7 @@ class PdfAnnotationController extends ChangeNotifier {
     } else if (index < 0) {
       _pushUndoSnapshot();
       _texts.add(_withDisplayBox(working, session.pageSize));
-    } else if (_texts[index].text != working.text) {
+    } else if (_texts[index].text != working.text || _texts[index].style != working.style) {
       _pushUndoSnapshot();
       _texts[index] = _withDisplayBox(working, session.pageSize).copyWith(updatedAt: (clock ?? _defaultClock)());
     } else {
@@ -2302,6 +2366,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _highlighterWidth.dispose();
     _eraserRadius.dispose();
     _rectFillColor.dispose();
+    _textStyle.dispose();
     _pendingStamp.dispose();
     _selectedStampId.dispose();
     _selectedRectId.dispose();

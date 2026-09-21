@@ -5949,7 +5949,8 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// removes any stroke, and the callback receives every stroke.
   ///
   /// The remaining parameters ([tool], [strokeColor], [strokeWidth],
-  /// [highlighterColor], [highlighterWidth], [eraserRadius]) are
+  /// [highlighterColor], [highlighterWidth], [eraserRadius],
+  /// [rectFillColor], [textStyle]) are
   /// optional overrides for the controller's runtime stroke-style
   /// state. Non-null values are applied; null leaves the previously-set
   /// value in place. The controller remembers tool / pen color /
@@ -5974,6 +5975,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
     double? highlighterWidth,
     double? eraserRadius,
     Color? rectFillColor,
+    PdfTextAnnotationStyle? textStyle,
   }) async {
     _annotationController.enterMode(
       creatorName: creatorName,
@@ -5984,6 +5986,7 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       highlighterWidth: highlighterWidth,
       eraserRadius: eraserRadius,
       rectFillColor: rectFillColor,
+      textStyle: textStyle,
     );
   }
 
@@ -6051,6 +6054,21 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// from the pen and highlighter colors and kept across
   /// `enterAnnotationMode` / `exitAnnotationMode` cycles.
   ValueListenable<Color> get annotationRectFillColorListenable => _annotationController.rectFillColorListenable;
+
+  /// Current armed text style. See [annotationTextStyleListenable] for
+  /// change notifications.
+  PdfTextAnnotationStyle get annotationTextStyle => _annotationController.textStyle;
+
+  /// Replace the text style of the [PdfAnnotationTool.text] tool. It
+  /// restyles the text being edited, else the selected text annotation
+  /// (one undo step), else arms the style of the next text annotation.
+  void setAnnotationTextStyle(PdfTextAnnotationStyle value) => _annotationController.setTextStyle(value);
+
+  /// Listenable carrying the armed text style, which is also the style
+  /// of the selected text annotation once one is selected. Kept across
+  /// `enterAnnotationMode` / `exitAnnotationMode` cycles.
+  ValueListenable<PdfTextAnnotationStyle> get annotationTextStyleListenable =>
+      _annotationController.textStyleListenable;
 
   /// Arm a [PdfStampDefinition] for placement (or pass `null` to disarm).
   /// While the active tool is [PdfAnnotationTool.stamp] and a stamp is
