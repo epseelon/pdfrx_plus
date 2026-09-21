@@ -18,6 +18,7 @@ import '../utils/edge_insets_extensions.dart';
 import '../utils/platform.dart';
 import 'annotations/pdf_annotation_controller.dart';
 import 'annotations/pdf_annotation_layer.dart';
+import 'annotations/text_edit_caret_pan.dart';
 import 'interactive_viewer.dart' as iv;
 import 'internals/pdf_error_widget.dart';
 import 'internals/pdf_viewer_key_handler.dart';
@@ -398,6 +399,103 @@ class _PdfViewerState extends State<PdfViewer>
       controller.annotationModeListenable.value,
       controller.currentToolListenable.value,
     );
+  }
+
+  // ───────────── Inline text edit: keeping the caret above the keyboard ─────────────
+
+  /// The view as it stood when the inline text edit in progress started,
+  /// or `null` when no edit is in progress. It is what the caret pan is
+  /// measured from, and what the commit puts back.
+  Matrix4? _textEditStartMatrix;
+
+  /// How far the caret pan has moved the view from [_textEditStartMatrix],
+  /// in logical pixels along y. Never positive.
+  double _textEditPanShift = 0;
+
+  bool _textEditCaretPanScheduled = false;
+
+  void _onTextEditInProgressChanged() {
+    final controller = _annotationController;
+    if (controller == null || !mounted) return;
+    if (controller.textEditInProgressListenable.value) {
+      _stopInteraction();
+      _textEditStartMatrix = _txController.value.clone();
+      _textEditPanShift = 0;
+      _scheduleTextEditCaretPan();
+      return;
+    }
+    // The pan was a temporary accommodation: the commit puts the view
+    // back exactly where the edit found it, position and zoom. A view
+    // that never moved is not touched at all.
+    final start = _textEditStartMatrix;
+    _textEditStartMatrix = null;
+    if (start != null && _textEditPanShift != 0) _txController.setValueWithoutNormalization(start);
+    _textEditPanShift = 0;
+  }
+
+  /// The caret moved, the text was re-boxed, or the keyboard inset
+  /// changed. Coalesced to once a frame, and never run from a build.
+  void _scheduleTextEditCaretPan() {
+    if (_textEditStartMatrix == null || _textEditCaretPanScheduled) return;
+    _textEditCaretPanScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _textEditCaretPanScheduled = false;
+      _applyTextEditCaretPan();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// Moves the view so the editor's caret clears the on-screen keyboard.
+  ///
+  /// This is the ONE navigation that runs while a drawing tool suppresses
+  /// navigation, which the Text tool does: it is internal to this state,
+  /// serves the inline editor only, and sets the matrix directly. Every
+  /// public navigation call stays a no-op behind
+  /// [_navigationSuppressedByAnnotation], and the user still cannot pan
+  /// or zoom.
+  ///
+  /// The shift is a pure function of the caret as the view stood when the
+  /// edit started and of the keyboard inset (see [textEditCaretPanShift]),
+  /// so it follows the keyboard as it slides, stays `0` when the keyboard
+  /// never covers the caret, and undoes itself when the keyboard goes.
+  /// The matrix is not normalized: a page that fits the view has nowhere
+  /// to scroll to, and lifting it past its bounds is the whole point.
+  void _applyTextEditCaretPan() {
+    final start = _textEditStartMatrix;
+    final caret = _annotationController?.textEditCaretInPage;
+    final layout = _layout;
+    final document = _document;
+    if (!mounted || start == null || caret == null || layout == null || document == null) return;
+    if (caret.pageIndex >= layout.pageLayouts.length || caret.pageIndex >= document.pages.length) return;
+    final renderBox = context.findRenderObject();
+    if (renderBox is! RenderBox || !renderBox.hasSize) return;
+
+    final pageRect = layout.pageLayouts[caret.pageIndex];
+    final scale = pageRect.width / document.pages[caret.pageIndex].width;
+    final caretInDocument = Rect.fromLTWH(
+      pageRect.left + caret.rect.left * scale,
+      pageRect.top + caret.rect.top * scale,
+      caret.rect.width * scale,
+      caret.rect.height * scale,
+    );
+    final media = MediaQuery.of(context);
+    final keyboardTop = renderBox.globalToLocal(Offset(0, media.size.height - media.viewInsets.bottom)).dy;
+    final shift = textEditCaretPanShift(
+      caret: MatrixUtils.transformRect(start, caretInDocument),
+      visibleBottom: min(renderBox.size.height, keyboardTop),
+    );
+    if (shift == _textEditPanShift) return;
+    _textEditPanShift = shift;
+    _txController.setValueWithoutNormalization(Matrix4.translationValues(0, shift, 0) * start);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Subscribes this state to the keyboard inset, which the caret pan
+    // follows.
+    MediaQuery.viewInsetsOf(context);
+    _scheduleTextEditCaretPan();
   }
 
   bool get _effectivePanEnabled => widget.params.panEnabled && !_navigationSuppressedByAnnotation;
@@ -5350,6 +5448,8 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       _annotationController.inFlightChangedListenable.removeListener(__state!._onAnnotationContentChanged);
       _annotationController.stampDragChangedListenable.removeListener(__state!._onAnnotationContentChanged);
       _annotationController.stampPicturesChangedListenable.removeListener(__state!._onAnnotationContentChanged);
+      _annotationController.textEditInProgressListenable.removeListener(__state!._onTextEditInProgressChanged);
+      _annotationController.textEditCaretChangedListenable.removeListener(__state!._scheduleTextEditCaretPan);
     }
     __state = state;
     if (__state != null) {
@@ -5373,6 +5473,10 @@ class PdfViewerController extends ValueListenable<Matrix4> {
       _annotationController.inFlightChangedListenable.addListener(__state!._onAnnotationContentChanged);
       _annotationController.stampDragChangedListenable.addListener(__state!._onAnnotationContentChanged);
       _annotationController.stampPicturesChangedListenable.addListener(__state!._onAnnotationContentChanged);
+      // The inline text editor's caret pan, which is internal to the
+      // viewer state: see `_applyTextEditCaretPan`.
+      _annotationController.textEditInProgressListenable.addListener(__state!._onTextEditInProgressChanged);
+      _annotationController.textEditCaretChangedListenable.addListener(__state!._scheduleTextEditCaretPan);
       __state!._syncStampPictureDecoder();
       __state!._syncAnnotationFonts();
     }
@@ -5967,6 +6071,17 @@ class PdfViewerController extends ValueListenable<Matrix4> {
   /// does not exist or is owned by a different creator (foreign-creator
   /// protection). Pushes one undo snapshot.
   void deleteStamp(String id) => _annotationController.deleteStamp(id);
+
+  /// `true` while an inline edit of a text annotation is in progress:
+  /// from the editor opening to the commit.
+  ///
+  /// A host that handles key events around the viewer must ignore them
+  /// while this is `true`: a key listener above the editor observes the
+  /// keys the editor consumes (an arrow key moves the caret AND reaches
+  /// the listener), so focus alone does not keep them apart. It turns
+  /// `false` at the end of the commit, which is also the moment for the
+  /// host to take the keyboard focus back.
+  ValueListenable<bool> get textEditInProgressListenable => _annotationController.textEditInProgressListenable;
 
   /// Exit annotation drawing mode.
   ///

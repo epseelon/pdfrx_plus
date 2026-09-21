@@ -3,7 +3,7 @@ import 'dart:ui' hide TextStyle;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart' show TextStyle;
+import 'package:flutter/painting.dart' show TextPosition, TextStyle;
 
 import 'annotation_paint_sequence.dart';
 import 'annotation_text_layout.dart';
@@ -116,6 +116,8 @@ class PdfAnnotationController extends ChangeNotifier {
   final ValueNotifier<String?> _selectedTextId = ValueNotifier<String?>(null);
   final ValueNotifier<String?> _editingTextId = ValueNotifier<String?>(null);
   final ValueNotifier<int> _textEditTick = ValueNotifier<int>(0);
+  final ValueNotifier<bool> _textEditInProgress = ValueNotifier<bool>(false);
+  final ValueNotifier<int> _textEditCaretTick = ValueNotifier<int>(0);
   final PdfStampPictureCache _stampPictures = PdfStampPictureCache();
   final Map<int, List<PdfAnnotationPaintEntry>> _paintSequences = <int, List<PdfAnnotationPaintEntry>>{};
   final Map<String, _MemoizedTextLayout> _textLayouts = <String, _MemoizedTextLayout>{};
@@ -1715,6 +1717,58 @@ class PdfAnnotationController extends ChangeNotifier {
   /// editor as the text grows without repainting the page canvas.
   Listenable get textEditChangedListenable => _textEditTick;
 
+  /// `true` while an inline text edit is in progress.
+  ///
+  /// It turns `false` at the END of a commit, once the model and the
+  /// selection are what the commit leaves them, so a listener that reacts
+  /// to the edit being over (restoring the view, taking the keyboard
+  /// focus back) reads a settled controller.
+  ValueListenable<bool> get textEditInProgressListenable => _textEditInProgress;
+
+  /// Whether [dispose] has run. For a deferred caller, which cannot know
+  /// whether the controller outlived the frame it was scheduled in.
+  bool get isDisposed => _disposed;
+  bool _disposed = false;
+
+  /// Bumps whenever [textEditCaretInPage] may have moved: the editor
+  /// reported a new caret offset, or the text changed under it.
+  Listenable get textEditCaretChangedListenable => _textEditCaretTick;
+
+  /// Record where the inline editor's caret is: the extent offset of its
+  /// selection, in UTF-16 code units. No-op when no edit is in progress.
+  void updateTextEditCaret(int offset) {
+    final session = _textEdit;
+    if (session == null || session.caretOffset == offset) return;
+    session.caretOffset = offset;
+    _textEditCaretTick.value++;
+  }
+
+  /// The caret of the edit in progress on its page, in PDF points, or
+  /// `null` when no edit is in progress.
+  ///
+  /// It comes from the layout the canvas paints the committed text with,
+  /// so it is where the editor draws its caret (the two produce the same
+  /// glyph positions). Until the editor reports an offset the caret is
+  /// taken to be at the end of the text. For a rotated annotation the
+  /// rect is the box that bounds the rotated caret.
+  ({int pageIndex, Rect rect})? get textEditCaretInPage {
+    final session = _textEdit;
+    if (session == null) return null;
+    final working = session.working;
+    final box = textDisplayBoxFor(working, pageSize: session.pageSize);
+    final painter = box.layout.painter;
+    final position = TextPosition(offset: (session.caretOffset ?? working.text.length).clamp(0, working.text.length));
+    final origin = box.displayRect.topLeft + box.textOffset;
+    final local =
+        (origin + painter.getOffsetForCaret(position, Rect.zero)) &
+        Size(0, painter.getFullHeightForCaret(position, Rect.zero));
+    if (working.rotationDeg == 0) return (pageIndex: working.pageIndex, rect: local);
+    final center = box.displayRect.center;
+    final a = rotatePointToScreen(local.topLeft, center: center, rotationDeg: working.rotationDeg);
+    final b = rotatePointToScreen(local.bottomLeft, center: center, rotationDeg: working.rotationDeg);
+    return (pageIndex: working.pageIndex, rect: Rect.fromPoints(a, b));
+  }
+
   /// The annotation being edited, carrying the text typed so far, or
   /// `null` when no edit is in progress.
   ///
@@ -1913,6 +1967,7 @@ class PdfAnnotationController extends ChangeNotifier {
   void _startTextEdit(_TextEditSession session) {
     _textEdit = session;
     _editingTextId.value = session.working.id;
+    _textEditInProgress.value = true;
     // Undo and redo are off for the length of the edit: a snapshot
     // restored underneath an open editor would leave it editing an
     // annotation that is no longer there.
@@ -1929,6 +1984,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (session == null || session.working.text == text) return;
     session.working = session.working.copyWith(text: text);
     _textEditTick.value++;
+    _textEditCaretTick.value++;
   }
 
   /// End the edit in progress and write it to the in-memory model. No-op
@@ -1981,6 +2037,7 @@ class PdfAnnotationController extends ChangeNotifier {
       clearTextSelection();
     }
     _refreshHistoryListenables();
+    _textEditInProgress.value = false;
     notifyListeners();
   }
 
@@ -2169,6 +2226,7 @@ class PdfAnnotationController extends ChangeNotifier {
     if (_textEdit == null) return;
     _textEdit = null;
     _editingTextId.value = null;
+    _textEditInProgress.value = false;
   }
 
   /// Every committed-content mutation in this class ends in a
@@ -2232,6 +2290,7 @@ class PdfAnnotationController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _modeListenable.dispose();
     _inFlightTick.dispose();
     _eraserCursorTick.dispose();
@@ -2249,6 +2308,8 @@ class PdfAnnotationController extends ChangeNotifier {
     _selectedTextId.dispose();
     _editingTextId.dispose();
     _textEditTick.dispose();
+    _textEditInProgress.dispose();
+    _textEditCaretTick.dispose();
     _canUndo.dispose();
     _canRedo.dispose();
     _stampPictures.dispose();
@@ -2442,6 +2503,10 @@ class _TextEditSession {
 
   /// The annotation as typed so far.
   PdfTextAnnotation working;
+
+  /// Extent offset of the editor's selection, or `null` until the editor
+  /// reports one.
+  int? caretOffset;
 }
 
 class _PageLayoutInfo {

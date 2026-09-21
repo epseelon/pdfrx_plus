@@ -60,8 +60,16 @@ double textEditorWidthFor(double wrapWidth, {required double cursorWidth}) {
 /// text scaling, so the text does not move when the edit commits.
 ///
 /// Committing is the caller's business and is never focus-driven: this
-/// widget reports what is typed through [onChanged] and an Escape press
-/// through [onEscape], and does nothing when it loses focus.
+/// widget reports what is typed through [onChanged] and where the caret
+/// is through [onCaretChanged], asks for a commit through [onCommit], and
+/// does nothing when it merely loses focus. It asks for a commit on:
+///
+/// - Escape;
+/// - a back press (the Android back button), through a [PopScope] it
+///   holds for as long as it is mounted, which is as long as the edit is
+///   in progress: that press only commits and never pops the route;
+/// - the on-screen keyboard going away (see `_onKeyboardGone`);
+/// - the app being paused, so typed text is not lost with the process.
 class PdfTextAnnotationEditor extends StatefulWidget {
   const PdfTextAnnotationEditor({
     required this.initialText,
@@ -69,7 +77,8 @@ class PdfTextAnnotationEditor extends StatefulWidget {
     required this.align,
     required this.cursorWidth,
     required this.onChanged,
-    required this.onEscape,
+    required this.onCaretChanged,
+    required this.onCommit,
     super.key,
   });
 
@@ -78,39 +87,112 @@ class PdfTextAnnotationEditor extends StatefulWidget {
   final PdfTextAnnotationAlign align;
   final double cursorWidth;
   final ValueChanged<String> onChanged;
-  final VoidCallback onEscape;
+
+  /// Extent offset of the selection, whenever it moves.
+  final ValueChanged<int> onCaretChanged;
+
+  /// Asks the caller to commit the edit. May be called when the edit is
+  /// already over, so the caller's commit must be idempotent.
+  final VoidCallback onCommit;
 
   @override
   State<PdfTextAnnotationEditor> createState() => _PdfTextAnnotationEditorState();
 }
 
-class _PdfTextAnnotationEditorState extends State<PdfTextAnnotationEditor> {
+class _PdfTextAnnotationEditorState extends State<PdfTextAnnotationEditor> with WidgetsBindingObserver {
   late final TextEditingController _text = TextEditingController(text: widget.initialText);
   final FocusNode _focus = FocusNode(debugLabel: 'PdfTextAnnotationEditor');
+
+  /// The keyboard inset last seen, to tell the keyboard going away (a
+  /// fall to zero) from there never having been one.
+  double _keyboardInset = 0;
+  ModalRoute<Object?>? _route;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _text.addListener(_reportCaret);
     // Requested rather than left to `autofocus`, which yields to whatever
     // already holds the focus in the scope (the host's key listener).
     _focus.requestFocus();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+    final inset = MediaQuery.viewInsetsOf(context).bottom;
+    final gone = _keyboardInset > 0 && inset <= 0;
+    _keyboardInset = inset;
+    // Not from here: this runs during a build, and a commit notifies
+    // widgets that are not allowed to rebuild in the middle of one.
+    if (gone) WidgetsBinding.instance.addPostFrameCallback((_) => _onKeyboardGone());
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _text.dispose();
     _focus.dispose();
     super.dispose();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) widget.onCommit();
+  }
+
+  void _reportCaret() {
+    final offset = _text.selection.extentOffset;
+    if (offset >= 0) widget.onCaretChanged(offset);
+  }
+
+  /// The on-screen keyboard went away: its inset fell back to zero.
+  ///
+  /// That commits when the USER sent it away, and must not when it went
+  /// because something else took the focus, a toolbar popup above all (a
+  /// `PopupMenuButton` pushes a route, the editor loses the focus, the
+  /// keyboard closes; when the popup closes the editor gets both back).
+  /// The two are told apart by who holds the focus once the keyboard is
+  /// gone:
+  ///
+  /// - Android's back gesture and its keyboard's own hide key close the
+  ///   keyboard and leave the focus on the editor;
+  /// - the dismiss key of the iOS keyboard closes the input connection,
+  ///   which makes `EditableText` unfocus itself: the focus falls back to
+  ///   the enclosing scope, and nothing else claims it;
+  /// - a popup, or another field, holds the focus itself, and a popup
+  ///   also leaves this editor's route no longer the current one.
+  ///
+  /// With a hardware keyboard there is no inset, so none of this runs. A
+  /// host whose `Scaffold` resizes for the keyboard strips the inset from
+  /// the `MediaQuery` below it, so it never runs there either.
+  void _onKeyboardGone() {
+    if (!mounted || _keyboardInset > 0) return;
+    if (_route?.isCurrent == false) return;
+    final focused = FocusManager.instance.primaryFocus;
+    final nothingElseTookTheFocus = focused == null || focused == _focus || focused is FocusScopeNode;
+    if (nothingElseTookTheFocus) widget.onCommit();
+  }
+
+  @override
   Widget build(BuildContext context) {
     // Annotation text is measured in PDF points and scales with the page
     // zoom only: it does not follow the operating system's text scale.
-    return MediaQuery.withNoTextScaling(
-      child: CallbackShortcuts(
-        bindings: {const SingleActivator(LogicalKeyboardKey.escape): widget.onEscape},
-        child: _buildField(),
+    return PopScope(
+      // Held for as long as the edit is in progress: a back press only
+      // commits. The commit unmounts this editor, and back is the
+      // route's again.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) widget.onCommit();
+      },
+      child: MediaQuery.withNoTextScaling(
+        child: CallbackShortcuts(
+          bindings: {const SingleActivator(LogicalKeyboardKey.escape): widget.onCommit},
+          child: _buildField(),
+        ),
       ),
     );
   }

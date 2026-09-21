@@ -166,7 +166,28 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   @override
   void dispose() {
     _controller.unregisterPageLayout(_page.pageNumber - 1);
+    _commitTextEditLeftOpen();
     super.dispose();
+  }
+
+  /// An edit still open on this page when its layer goes away is
+  /// committed, so what was typed is not lost with the editor. It follows
+  /// the rules of any commit (empty text is discarded, one undo step) and
+  /// saves nothing.
+  ///
+  /// Not from inside `dispose`: a commit notifies widgets that are still
+  /// mounted, and the tree is locked while it is being finalized. By the
+  /// end of the frame the controller itself may be gone, when the whole
+  /// viewer went with this layer.
+  void _commitTextEditLeftOpen() {
+    final editing = _controller.editingText;
+    if (editing == null || editing.pageIndex != _page.pageNumber - 1) return;
+    final controller = _controller;
+    final id = editing.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (controller.isDisposed || controller.editingTextIdListenable.value != id) return;
+      controller.commitTextEdit();
+    });
   }
 
   void _registerPageLayout() {
@@ -1098,7 +1119,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
               align: editing.align,
               cursorWidth: cursorWidth,
               onChanged: _controller.updateTextEdit,
-              onEscape: _controller.commitTextEdit,
+              onCaretChanged: _controller.updateTextEditCaret,
+              onCommit: _controller.commitTextEdit,
             ),
           ),
         ),
