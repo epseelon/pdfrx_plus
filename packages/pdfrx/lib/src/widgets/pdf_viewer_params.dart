@@ -757,6 +757,10 @@ class PdfViewerParams {
   /// screen pixels (zoom-independent). The default `0.0` reproduces
   /// the exact-fit selection box (handle rectangle equals the symbol
   /// bounds).
+  ///
+  /// A selected text annotation is padded by the same amount, so its
+  /// handles clear the glyphs and a short word keeps a body zone to be
+  /// moved by. Rectangles are not padded.
   final double selectedStampPadding;
 
   /// Strings used by the annotation selection overlay: the rotation

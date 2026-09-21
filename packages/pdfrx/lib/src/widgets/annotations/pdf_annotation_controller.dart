@@ -132,6 +132,7 @@ class PdfAnnotationController extends ChangeNotifier {
   int? _eraserPrevPage;
   _ShapeDragState? _stampDragState;
   _ShapeDragState? _rectDragState;
+  _TextDragState? _textDragState;
   _RectDraft? _rectDraft;
   _TextAreaDraft? _textDraft;
   _TextEditSession? _textEdit;
@@ -541,6 +542,7 @@ class PdfAnnotationController extends ChangeNotifier {
     // is dropped.
     if (_stampDragState != null) _stampDragState = null;
     if (_rectDragState != null) _rectDragState = null;
+    if (_textDragState != null) _textDragState = null;
     if (_rectDraft != null) _rectDraft = null;
     if (_textDraft != null) _textDraft = null;
     if (_selectedStampId.value != null) _selectedStampId.value = null;
@@ -684,6 +686,7 @@ class PdfAnnotationController extends ChangeNotifier {
     _rectDraft = null;
     _stampDragState = null;
     _rectDragState = null;
+    _textDragState = null;
     _undoStack.clear();
     _redoStack.clear();
     _refreshHistoryListenables();
@@ -1997,6 +2000,169 @@ class PdfAnnotationController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Begin a drag (move/resize/rotate) of the selected text annotation,
+  /// pushing one undo snapshot for the whole drag. Mirrors
+  /// [beginRectDrag], including its guards: no selection, a bandmate's
+  /// annotation, or a drag already in progress are all no-ops, and so is
+  /// an edit in progress.
+  ///
+  /// The geometry captured is the DISPLAY box on a page of [pageSize],
+  /// not the stored one: it is what the gizmo wraps, so it is what the
+  /// handle under the finger belongs to.
+  void beginTextDrag(PdfAnnotationHandle handle, {required Size pageSize}) {
+    if (_textDragState != null || _textEdit != null) return;
+    final id = _selectedTextId.value;
+    if (id == null) return;
+    final text = _textById(id);
+    if (text == null || !_ownsText(text)) return;
+    _pushUndoSnapshot();
+    _textDragState = _TextDragState(
+      shape: _ShapeDragState(
+        shapeId: id,
+        handle: handle,
+        originalRect: textDisplayBoxFor(text, pageSize: pageSize).displayRect,
+        originalRotation: text.rotationDeg,
+        originalPageIndex: text.pageIndex,
+      ),
+      pageSize: pageSize,
+    );
+  }
+
+  /// End the in-progress text drag (commit boundary). Safe to call when
+  /// no drag is in progress, which is what makes a pointer-cancel clean.
+  void endTextDrag() {
+    if (_textDragState == null) return;
+    _textDragState = null;
+  }
+
+  /// Translate the selected text annotation by [cumulativeDeltaViewer] in
+  /// the viewer's pixel space, reassigning its `pageIndex` when the box's
+  /// centre crosses into another registered page: the cross-page logic
+  /// of [applyRectMoveViewer], unclamped for the same reason.
+  ///
+  /// A move is a mutation, so the display box at the new position is
+  /// what is written back. For auto-sized text that re-wraps it to the
+  /// implicit maximum width of where it now is, on the page it is now on.
+  void applyTextMoveViewer(Offset cumulativeDeltaViewer) {
+    final state = _textDragState?.shape;
+    if (state == null) return;
+    if (state.handle != PdfAnnotationHandle.body) return;
+
+    final origPageInfo = _pageLayouts[state.originalPageIndex];
+    if (origPageInfo == null) return;
+
+    final newRectViewer = _pdfRectToViewer(state.originalRect, origPageInfo).shift(cumulativeDeltaViewer);
+    final center = newRectViewer.center;
+
+    var targetPageIdx = state.originalPageIndex;
+    for (final entry in _pageLayouts.entries) {
+      if (entry.value.viewerRect.contains(center)) {
+        targetPageIdx = entry.key;
+        break;
+      }
+    }
+    final targetPageInfo = _pageLayouts[targetPageIdx];
+    if (targetPageInfo == null) return;
+
+    final newPdfRect = _viewerRectToPdf(newRectViewer, targetPageInfo);
+    _replaceSelectedText(
+      (t) => _withDisplayBox(
+        t.copyWith(pageIndex: targetPageIdx, rectInPdfSpace: newPdfRect, updatedAt: _defaultClock()),
+        targetPageInfo.pageSize,
+      ),
+    );
+    _bumpShapeDrag();
+  }
+
+  /// Resize the selected text annotation's box by applying
+  /// [cumulativeDeltaPdf] to the handle captured at [beginTextDrag]. The
+  /// font size is never touched: the box is reshaped and the text
+  /// rewraps in it.
+  ///
+  /// Free aspect and the [kMinAnnotationSizePts] clamp, as
+  /// [applyRectResize]. On top of that:
+  ///
+  /// - Auto-sized text becomes a text area at the dragged size. The
+  ///   snapshot [beginTextDrag] pushed predates it, so the conversion and
+  ///   the resize are one undo step. Nothing converts it back.
+  /// - The dragged edges stop at the page edges, componentwise, in the
+  ///   box's own frame; the box is never translated to fit.
+  /// - The box is never shorter than its content. A dragged TOP edge
+  ///   stops at the content height, so the bottom edge stays where it
+  ///   was; in every other case the layout seam grows the box downward.
+  void applyTextResize(Offset cumulativeDeltaPdf) {
+    final drag = _textDragState;
+    if (drag == null) return;
+    final state = drag.shape;
+    final handle = state.handle;
+    if (handle == PdfAnnotationHandle.body || handle == PdfAnnotationHandle.rotation) return;
+    final original = state.originalRect;
+
+    // The resize in the box's own frame, before the centre is re-derived.
+    var local = resizeInLocalFrame(
+      originalRect: original,
+      rotationDeg: 0,
+      handle: handle,
+      delta: unrotateVectorToLocal(cumulativeDeltaPdf, state.originalRotation),
+      lockAspect: false,
+    );
+    local = _clampMovedEdgesInsidePage(local, original: original, pageSize: drag.pageSize);
+
+    final text = _textById(state.shapeId);
+    if (text == null) return;
+    if (local.top != original.top) {
+      final probe = text.copyWith(autoSize: false, rectInPdfSpace: local);
+      final contentHeight = textDisplayBoxFor(probe, pageSize: drag.pageSize).layout.size.height;
+      if (local.height < contentHeight) {
+        local = Rect.fromLTRB(local.left, math.max(local.bottom - contentHeight, 0.0), local.right, local.bottom);
+      }
+    }
+
+    // Only one edge per axis moves, so the two differences sum to the
+    // clamped delta of whichever did. Handing that back to
+    // `resizeInLocalFrame` re-derives the centre, which keeps the
+    // opposite edge of a rotated box fixed on screen.
+    final clampedDelta = Offset(
+      (local.left - original.left) + (local.right - original.right),
+      (local.top - original.top) + (local.bottom - original.bottom),
+    );
+    final newRect = resizeInLocalFrame(
+      originalRect: original,
+      rotationDeg: state.originalRotation,
+      handle: handle,
+      delta: rotateVectorToScreen(clampedDelta, state.originalRotation),
+      lockAspect: false,
+    );
+    _replaceSelectedText(
+      (t) => _withDisplayBox(
+        t.copyWith(autoSize: false, rectInPdfSpace: newRect, updatedAt: _defaultClock()),
+        drag.pageSize,
+      ),
+    );
+    _bumpShapeDrag();
+  }
+
+  /// Set the selected text annotation's rotation to [absoluteAngleDeg]
+  /// (degrees, CCW about the centre of its display box). A free angle:
+  /// nothing snaps.
+  void applyTextRotate(double absoluteAngleDeg) {
+    final state = _textDragState?.shape;
+    if (state == null) return;
+    if (state.handle != PdfAnnotationHandle.rotation) return;
+    _replaceSelectedText(
+      (t) => t.copyWith(rectInPdfSpace: state.originalRect, rotationDeg: absoluteAngleDeg, updatedAt: _defaultClock()),
+    );
+    _bumpShapeDrag();
+  }
+
+  void _replaceSelectedText(PdfTextAnnotation Function(PdfTextAnnotation) update) {
+    final id = _selectedTextId.value;
+    if (id == null) return;
+    final idx = _texts.indexWhere((t) => t.id == id);
+    if (idx < 0) return;
+    _texts[idx] = update(_texts[idx]);
+  }
+
   /// Drops the edit in progress without committing it, for the paths
   /// where the document it belonged to is gone.
   void _abandonTextEdit() {
@@ -2168,6 +2334,23 @@ Rect _clampRectInsidePage(Rect rect, Size pageSize) {
   return Rect.fromLTWH(left, top, rect.width, rect.height);
 }
 
+/// Pulls the edges of [resized] that a resize moved away from
+/// [original] back inside the page, componentwise. An anchored edge
+/// never moves, the box is never translated to fit, and the minimum
+/// size wins over the page edge, so a box that was already off the page
+/// does not collapse.
+Rect _clampMovedEdgesInsidePage(Rect resized, {required Rect original, required Size pageSize}) {
+  var left = resized.left;
+  var top = resized.top;
+  var right = resized.right;
+  var bottom = resized.bottom;
+  if (left != original.left) left = math.min(math.max(left, 0.0), right - kMinAnnotationSizePts);
+  if (right != original.right) right = math.max(math.min(right, pageSize.width), left + kMinAnnotationSizePts);
+  if (top != original.top) top = math.min(math.max(top, 0.0), bottom - kMinAnnotationSizePts);
+  if (bottom != original.bottom) bottom = math.max(math.min(bottom, pageSize.height), top + kMinAnnotationSizePts);
+  return Rect.fromLTRB(left, top, right, bottom);
+}
+
 class _AnnotationSnapshot {
   const _AnnotationSnapshot({
     required this.strokes,
@@ -2202,6 +2385,16 @@ class _ShapeDragState {
   final Rect originalRect;
   final double originalRotation;
   final int originalPageIndex;
+}
+
+/// A text drag: the shared shape geometry, plus the size of the page the
+/// drag started on, which a resize needs to lay the text out and to stop
+/// at the page edges.
+class _TextDragState {
+  _TextDragState({required this.shape, required this.pageSize});
+
+  final _ShapeDragState shape;
+  final Size pageSize;
 }
 
 /// The in-flight rubber band: the anchor corner pinned at pointer-down,

@@ -137,6 +137,22 @@ void main() {
       expect(_boxOf(annotation, pageSize: const Size(400, 300)).displayRect, const Rect.fromLTWH(150, 30, 90, 10));
     });
 
+    test('re-wraps after a move toward the right edge, and is back on one line once moved away', () {
+      // A move only changes where the stored box sits; the wrap width
+      // follows it, so the same text breaks differently at each stop.
+      const text = 'aaaa bbbb';
+      final inTheMiddle = _boxOf(_annotation(text, rect: const Rect.fromLTWH(20, 50, 90, 10)));
+      expect(inTheMiddle.displayRect, const Rect.fromLTWH(20, 50, 90, 10));
+
+      final nearTheEdge = _boxOf(_annotation(text, rect: const Rect.fromLTWH(150, 50, 90, 10)));
+      expect(_linesOf(nearTheEdge.layout, text), ['aaaa', 'bbbb']);
+      expect(nearTheEdge.displayRect, const Rect.fromLTWH(150, 50, 40, 20));
+
+      final movedBack = _boxOf(_annotation(text, rect: nearTheEdge.displayRect.shift(const Offset(-130, 0))));
+      expect(_linesOf(movedBack.layout, text), [text]);
+      expect(movedBack.displayRect, const Rect.fromLTWH(20, 50, 90, 10));
+    });
+
     test('grows rightward and downward from its top-left corner whatever the alignment', () {
       for (final align in PdfTextAnnotationAlign.values) {
         final box = _boxOf(_annotation('aaaa\nbb', rect: const Rect.fromLTWH(20, 30, 1, 1), align: align));

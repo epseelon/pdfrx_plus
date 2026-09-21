@@ -64,7 +64,8 @@ class PdfAnnotationLayer extends StatefulWidget {
   /// Uniform padding in screen pixels between a selected stamp's symbol
   /// and its handle rectangle. Inflates the selection box, the
   /// handle/delete-button positions, and the body hit-region; the
-  /// rendered symbol stays at its true bounds. Sourced by the
+  /// rendered symbol stays at its true bounds. A selected text
+  /// annotation is padded by the same amount. Sourced by the
   /// `PdfViewer` from `PdfViewerParams.selectedStampPadding`.
   final double selectedStampPadding;
 
@@ -332,7 +333,7 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       else if (editingText != null)
                         _buildSelectionOverlay(
                           id: editingText.id,
-                          selectionRect: _textSelectionRect(editingText),
+                          selectionRect: _textLocalRect(editingText),
                           rotationDeg: editingText.rotationDeg,
                           editing: true,
                         )
@@ -972,8 +973,18 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     return Rect.fromLTWH(box.left * scaleX, box.top * scaleY, box.width * scaleX, box.height * scaleY);
   }
 
-  /// The handle rectangle for [text]: its own bounds, as for a rectangle.
-  Rect _textSelectionRect(PdfTextAnnotation text) => _selectionRect(_textLocalRect(text), _kRectHandlePaddingPx);
+  /// The handle rectangle for the SELECTED [text]: its display box
+  /// inflated by [PdfAnnotationLayer.selectedStampPadding], as for a
+  /// stamp and for the same reason. The handles clear the glyphs, and a
+  /// short word keeps a body zone to be moved by: with the handles on its
+  /// border every press inside 'rit.' would land within a handle's hit
+  /// radius.
+  ///
+  /// Only the selected annotation is padded. An unselected one is
+  /// hit-tested at its own bounds ([_textBodyContains]), so a tap beside
+  /// it still creates the next annotation, and the outline drawn while
+  /// editing hugs the box.
+  Rect _textSelectionRect(PdfTextAnnotation text) => _selectionRect(_textLocalRect(text), widget.selectedStampPadding);
 
   PdfAnnotationHandle? _hitTestTextHandles(PdfTextAnnotation text, Offset local) => hitTestHandles(
     rect: _textSelectionRect(text),
@@ -984,6 +995,9 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
   );
 
   bool _textBodyContains(PdfTextAnnotation text, Offset local) =>
+      containsRotated(rect: _textLocalRect(text), rotationDeg: text.rotationDeg, point: local);
+
+  bool _selectedTextGizmoContains(PdfTextAnnotation text, Offset local) =>
       containsRotated(rect: _textSelectionRect(text), rotationDeg: text.rotationDeg, point: local);
 
   bool _hitTestTextDeleteButton(PdfTextAnnotation text, Offset local) {
@@ -1117,7 +1131,15 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     if (selectedId == null) return;
     final selected = _findSelectedText(selectedId);
     if (selected == null) return;
-    _pendingHandle = _hitTestTextHandles(selected, local);
+    final hit = _hitTestTextHandles(selected, local);
+    if (hit == null) return;
+    _pendingHandle = hit;
+    if (hit == PdfAnnotationHandle.rotation) {
+      final rect = _textLocalRect(selected);
+      _stampCenterLocal = rect.center;
+      _initialRotationAngle = math.atan2(local.dy - rect.center.dy, local.dx - rect.center.dx);
+      _originalStampRotationDeg = selected.rotationDeg;
+    }
   }
 
   void _onTextPointerMove(Offset local) {
@@ -1129,7 +1151,8 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
     if (!_dragRecognized) {
       if (dx * dx + dy * dy < _kStampDragSlopPx * _kStampDragSlopPx) return;
       _dragRecognized = true;
-      if (_pendingHandle == null) {
+      final pending = _pendingHandle;
+      if (pending == null) {
         // Anchored at the pointer-DOWN point, not where the slop was
         // crossed.
         _rubberBanding = true;
@@ -1138,12 +1161,40 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
           anchorPdfPoint: _toPdfSpace(start),
           pageSize: _pageSizePts,
         );
+      } else {
+        // A drag on a handle or the body of the selected annotation
+        // manipulates it: it must never start a rubber band.
+        _activeHandle = pending;
+        _controller.beginTextDrag(pending, pageSize: _pageSizePts);
       }
-      // A drag on a handle or the body of the selected annotation is
-      // consumed: it must never start a rubber band.
     }
 
-    if (_rubberBanding) _controller.updateTextDraft(_toPdfSpace(local));
+    if (_rubberBanding) {
+      _controller.updateTextDraft(_toPdfSpace(local));
+      return;
+    }
+
+    final handle = _activeHandle;
+    if (handle == null) return;
+
+    if (handle == PdfAnnotationHandle.rotation) {
+      final center = _stampCenterLocal!;
+      final initial = _initialRotationAngle!;
+      final current = math.atan2(local.dy - center.dy, local.dx - center.dx);
+      // Screen-y grows downward, so a clockwise angular delta in screen
+      // space is a CCW rotation in our PDF-space convention.
+      final deltaRad = -(current - initial);
+      _controller.applyTextRotate(_originalStampRotationDeg! + deltaRad * 180.0 / math.pi);
+      return;
+    }
+
+    if (handle == PdfAnnotationHandle.body) {
+      // Viewer-pixel space, so crossing a page boundary can hand the
+      // annotation to a sibling annotation layer mid-drag.
+      _controller.applyTextMoveViewer(local - start);
+      return;
+    }
+    _controller.applyTextResize(_toPdfSpace(local) - _toPdfSpace(start));
   }
 
   void _onTextPointerUp(Offset local) {
@@ -1160,15 +1211,27 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
         // the finger landed.
         _handleTextTap(down);
       }
-    } else if (!_dragRecognized) {
+    } else if (_dragRecognized) {
+      _endTextDrag();
+    } else {
       _handleTextTap(down);
     }
     _resetTextPointerState();
   }
 
   void _onTextPointerCancel() {
-    if (_rubberBanding) _controller.cancelTextDraft();
+    if (_rubberBanding) {
+      _controller.cancelTextDraft();
+    } else if (_dragRecognized) {
+      _endTextDrag();
+    }
     _resetTextPointerState();
+  }
+
+  void _endTextDrag() {
+    if (_activeHandle == null) return;
+    _controller.endTextDrag();
+    _activeHandle = null;
   }
 
   void _resetTextPointerState() {
@@ -1188,6 +1251,12 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
       final selected = _findSelectedText(selectedId);
       if (selected != null && _hitTestTextDeleteButton(selected, local)) {
         _controller.deleteText(selected.id);
+        return;
+      }
+      // The whole gizmo is the selected annotation, padding included: a
+      // press there drags it, so a tap there is the second tap on it.
+      if (selected != null && _selectedTextGizmoContains(selected, local)) {
+        _controller.beginTextEdit(selected.id, pageSize: _pageSizePts);
         return;
       }
     }
