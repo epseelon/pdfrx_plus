@@ -501,6 +501,11 @@ void main() {
       await tester.enterText(_anyEditor, long.substring(1));
       await tester.pump();
       expect(controller.editingText!.text.length, 2499);
+      // A same-length replacement (fixing a typo) is not growth either.
+      final retyped = 'b${long.substring(2)}';
+      await tester.enterText(_anyEditor, retyped);
+      await tester.pump();
+      expect(controller.editingText!.text, retyped);
     });
 
     testWidgets('the editor breaks lines exactly where the layout function does', (tester) async {

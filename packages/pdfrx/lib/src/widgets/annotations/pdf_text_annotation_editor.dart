@@ -23,7 +23,8 @@ const double _kEditableCaretGap = 1.0;
 /// `LengthLimitingTextInputFormatter` is not used because it truncates:
 /// fed a stored text that is already over the cap, its first keystroke
 /// would cut the text down to the cap. Here an over-long text can still
-/// be edited down, a character at a time, and only growth is refused.
+/// be edited down, a character at a time, or retyped at the same length
+/// (a typo fixed), and only growth is refused.
 class PdfTextAnnotationLengthFormatter extends TextInputFormatter {
   const PdfTextAnnotationLengthFormatter([this.maxLength = kMaxTextAnnotationLength]);
 
@@ -33,7 +34,7 @@ class PdfTextAnnotationLengthFormatter extends TextInputFormatter {
   TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
     final newLength = newValue.text.characters.length;
     if (newLength <= maxLength) return newValue;
-    if (newLength < oldValue.text.characters.length) return newValue;
+    if (newLength <= oldValue.text.characters.length) return newValue;
     return oldValue;
   }
 }
