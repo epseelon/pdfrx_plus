@@ -8,7 +8,18 @@ import 'selection_geometry.dart';
 
 /// A face a font family really ships, as opposed to one the text engine
 /// would fake by emboldening or slanting the regular face.
-enum PdfAnnotationFontStyle { regular, bold, italic, boldItalic }
+enum PdfAnnotationFontStyle {
+  regular,
+  bold,
+  italic,
+  boldItalic;
+
+  /// Whether this face is drawn bold.
+  bool get isBold => this == bold || this == boldItalic;
+
+  /// Whether this face is drawn italic.
+  bool get isItalic => this == italic || this == boldItalic;
+}
 
 /// A font family the host app can render text annotations in, and the
 /// real faces it ships.
@@ -30,6 +41,24 @@ class PdfAnnotationFontFamily {
 
   /// Whether the family ships [style] as a real face.
   bool has(PdfAnnotationFontStyle style) => styles.contains(style);
+
+  /// The face really drawn when [bold] and [italic] are asked for: the
+  /// matching face when the family ships it, else the nearest one it does
+  /// (bold italic falls back to bold, then italic, then regular).
+  ///
+  /// A host's Bold or Italic toggle is meaningful exactly when the face
+  /// this returns with that flag on is drawn that way.
+  PdfAnnotationFontStyle realFace({required bool bold, required bool italic}) {
+    final wanted = <PdfAnnotationFontStyle>[
+      if (bold && italic) PdfAnnotationFontStyle.boldItalic,
+      if (bold) PdfAnnotationFontStyle.bold,
+      if (italic) PdfAnnotationFontStyle.italic,
+    ];
+    for (final style in wanted) {
+      if (has(style)) return style;
+    }
+    return PdfAnnotationFontStyle.regular;
+  }
 
   @override
   bool operator ==(Object other) =>
@@ -98,33 +127,18 @@ class PdfAnnotationFonts {
 /// still stored and shows again under a family that can.
 TextStyle resolveAnnotationTextStyle(PdfTextAnnotation annotation, PdfAnnotationFonts fonts) {
   final family = fonts.resolve(annotation.fontFamily);
-  final face = _realFace(family, bold: annotation.bold, italic: annotation.italic);
-  final bold = face == PdfAnnotationFontStyle.bold || face == PdfAnnotationFontStyle.boldItalic;
-  final italic = face == PdfAnnotationFontStyle.italic || face == PdfAnnotationFontStyle.boldItalic;
+  final face = family?.realFace(bold: annotation.bold, italic: annotation.italic) ?? PdfAnnotationFontStyle.regular;
   return TextStyle(
     inherit: false,
     fontFamily: family?.name,
     fontSize: annotation.fontSize,
     color: annotation.color,
-    fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
-    fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+    fontWeight: face.isBold ? FontWeight.w700 : FontWeight.w400,
+    fontStyle: face.isItalic ? FontStyle.italic : FontStyle.normal,
     decoration: annotation.underline ? TextDecoration.underline : TextDecoration.none,
     decorationColor: annotation.color,
     textBaseline: TextBaseline.alphabetic,
   );
-}
-
-PdfAnnotationFontStyle _realFace(PdfAnnotationFontFamily? family, {required bool bold, required bool italic}) {
-  if (family == null) return PdfAnnotationFontStyle.regular;
-  final wanted = <PdfAnnotationFontStyle>[
-    if (bold && italic) PdfAnnotationFontStyle.boldItalic,
-    if (bold) PdfAnnotationFontStyle.bold,
-    if (italic) PdfAnnotationFontStyle.italic,
-  ];
-  for (final style in wanted) {
-    if (family.has(style)) return style;
-  }
-  return PdfAnnotationFontStyle.regular;
 }
 
 /// Text laid out by [layoutAnnotationText].

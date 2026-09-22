@@ -286,6 +286,32 @@ void main() {
       expect(resolve(family: 'Hand').decoration, TextDecoration.none);
     });
 
+    test('realFace is the one public answer to "is this toggle drawn", nearest real face included', () {
+      // A host's Bold toggle must not go by "the family has SOME bold face":
+      // a family shipping bold italic but no plain bold draws a lone Bold
+      // request upright, so that toggle is dead unless Italic is on too.
+      const oddFamily = PdfAnnotationFontFamily(
+        'Odd',
+        styles: [PdfAnnotationFontStyle.regular, PdfAnnotationFontStyle.boldItalic],
+      );
+      expect(oddFamily.realFace(bold: true, italic: false), PdfAnnotationFontStyle.regular);
+      expect(oddFamily.realFace(bold: true, italic: false).isBold, isFalse);
+      expect(oddFamily.realFace(bold: true, italic: true), PdfAnnotationFontStyle.boldItalic);
+      expect(oddFamily.realFace(bold: true, italic: true).isBold, isTrue);
+
+      const hand = PdfAnnotationFontFamily(
+        'Hand',
+        styles: [PdfAnnotationFontStyle.regular, PdfAnnotationFontStyle.bold],
+      );
+      expect(hand.realFace(bold: true, italic: true), PdfAnnotationFontStyle.bold, reason: 'nearest real face');
+      expect(hand.realFace(bold: false, italic: true), PdfAnnotationFontStyle.regular);
+      expect(hand.realFace(bold: false, italic: true).isItalic, isFalse);
+
+      const serif = PdfAnnotationFontFamily('Serif', styles: PdfAnnotationFontStyle.values);
+      expect(serif.realFace(bold: false, italic: true), PdfAnnotationFontStyle.italic);
+      expect(serif.realFace(bold: false, italic: false), PdfAnnotationFontStyle.regular);
+    });
+
     test('font sets compare by value, so a rebuilt params object is not a change', () {
       const again = PdfAnnotationFonts(
         families: [
