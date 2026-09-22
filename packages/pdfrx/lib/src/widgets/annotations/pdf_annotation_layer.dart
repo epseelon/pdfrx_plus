@@ -343,8 +343,11 @@ class _PdfAnnotationLayerState extends State<PdfAnnotationLayer> {
                       // the Listener below, which routes them based on
                       // our own hit-tests in page-local space (so handles
                       // floating outside the bbox still receive input).
-                      // Selection is mutually exclusive across kinds,
-                      // so at most one of these is non-null.
+                      // Selection is mutually exclusive across kinds, so
+                      // at most one KIND is selected. A text being edited
+                      // is also the selected text (beginTextEdit selects
+                      // it first), and the edit outline wins: the order of
+                      // these branches is load-bearing.
                       if (selectedStamp != null)
                         _buildSelectionOverlay(
                           id: selectedStamp.id,
