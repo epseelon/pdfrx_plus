@@ -63,18 +63,22 @@ class _PdfViewerKeyHandlerState extends State<PdfViewerKeyHandler> {
       canRequestFocus: widget.params.canRequestFocus,
       onFocusChange: widget.onFocusChange,
       onKeyEvent: (node, event) {
-        // A key typed into a text input beneath the viewer (the inline
-        // text annotation editor) is the input's, never the viewer's.
-        // Claiming it here does more than steal a shortcut: a key event
-        // reported as handled is not turned into text by the platform,
-        // so Space ("next page" to the viewer) inserted nothing at all.
-        if (_focusIsInTextInput()) return KeyEventResult.ignored;
         if (event is KeyDownEvent || event is KeyRepeatEvent) {
+          // A key typed into a text input beneath the viewer (the inline
+          // text annotation editor) is the input's, never the viewer's.
+          // Claiming it here does more than steal a shortcut: a key event
+          // reported as handled is not turned into text by the platform,
+          // so Space ("next page" to the viewer) inserted nothing at all.
+          if (_focusIsInTextInput()) return KeyEventResult.ignored;
           if (widget.onKeyRepeat(widget.params, event.logicalKey, event is KeyDownEvent)) {
             _handledKeys.add(event.logicalKey);
             return KeyEventResult.handled;
           }
         } else if (event is KeyUpEvent) {
+          // Whether a KeyUp is the viewer's is decided by its own KeyDown,
+          // never by where focus sits now: a key held while a text input
+          // took focus must still be settled here, or it stays recorded as
+          // held and a later unclaimed KeyUp for it is wrongly claimed.
           if (_handledKeys.remove(event.logicalKey)) {
             return KeyEventResult.handled;
           }

@@ -115,4 +115,56 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets('a KeyUp arriving after focus moved into a text input still settles its claimed KeyDown', (tester) async {
+    // Hold a page-turn key on the viewer, tap into the inline text editor
+    // before releasing it. The KeyUp then arrives with a text input focused.
+    // It must still be paired with its claimed KeyDown, or the key stays
+    // recorded as held and a later, unclaimed KeyUp for the same key is
+    // reported handled: the #585 failure, one focus change later.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PdfViewerKeyHandler(
+            params: const PdfViewerKeyHandlerParams(),
+            onKeyRepeat: (_, key, _) => key == LogicalKeyboardKey.space,
+            child: const TextField(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const spaceDown = KeyDownEvent(
+      physicalKey: PhysicalKeyboardKey.space,
+      logicalKey: LogicalKeyboardKey.space,
+      timeStamp: Duration.zero,
+    );
+    const spaceUp = KeyUpEvent(
+      physicalKey: PhysicalKeyboardKey.space,
+      logicalKey: LogicalKeyboardKey.space,
+      timeStamp: Duration.zero,
+    );
+    final viewerFocus = Focus.of(tester.element(find.byType(TextField)));
+    final editorFocus = tester.widget<EditableText>(find.byType(EditableText)).focusNode;
+    Future<KeyEventResult?> send(KeyEvent event) async => viewerFocus.onKeyEvent?.call(viewerFocus, event);
+
+    viewerFocus.requestFocus();
+    await tester.pumpAndSettle();
+    expect(await send(spaceDown), KeyEventResult.handled);
+
+    editorFocus.requestFocus();
+    await tester.pumpAndSettle();
+    expect(editorFocus.hasFocus, isTrue);
+    // The Down was the viewer's, so its Up is too, wherever focus went.
+    expect(await send(spaceUp), KeyEventResult.handled);
+    // A Down typed into the text input is still never the viewer's.
+    expect(await send(spaceDown), KeyEventResult.ignored);
+
+    editorFocus.unfocus();
+    viewerFocus.requestFocus();
+    await tester.pumpAndSettle();
+    // No claimed Down is outstanding, so this Up falls through.
+    expect(await send(spaceUp), KeyEventResult.ignored);
+  });
 }
