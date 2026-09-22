@@ -42,8 +42,12 @@ class PdfTextAnnotationStyle {
   final bool underline;
   final PdfTextAnnotationAlign align;
 
+  /// Returns a copy with the given fields replaced. [fontFamily] is
+  /// nullable, so it cannot be cleared by passing `null`: pass
+  /// [clearFontFamily] to go back to the host app's default family.
   PdfTextAnnotationStyle copyWith({
     String? fontFamily,
+    bool clearFontFamily = false,
     double? fontSize,
     Color? color,
     bool? bold,
@@ -51,7 +55,7 @@ class PdfTextAnnotationStyle {
     bool? underline,
     PdfTextAnnotationAlign? align,
   }) => PdfTextAnnotationStyle(
-    fontFamily: fontFamily ?? this.fontFamily,
+    fontFamily: clearFontFamily ? null : fontFamily ?? this.fontFamily,
     fontSize: fontSize ?? this.fontSize,
     color: color ?? this.color,
     bold: bold ?? this.bold,
@@ -202,6 +206,7 @@ class PdfTextAnnotation {
   /// user really changed and of nothing else (see [copyWith]).
   PdfTextAnnotation withStyle(PdfTextAnnotationStyle style) => copyWith(
     fontFamily: style.fontFamily != fontFamily ? style.fontFamily : null,
+    clearFontFamily: style.fontFamily == null && fontFamily != null,
     fontSize: style.fontSize != fontSize ? style.fontSize : null,
     color: style.color != color ? style.color : null,
     bold: style.bold != bold ? style.bold : null,
@@ -214,6 +219,9 @@ class PdfTextAnnotation {
   /// Fields not supplied retain the original value. Unless
   /// [preservedJson] is supplied, the raw values preserved for the
   /// replaced fields are retired (see [preservedJson]).
+  ///
+  /// [fontFamily] is nullable, so it cannot be cleared by passing `null`:
+  /// pass [clearFontFamily] to go back to the host app's default family.
   PdfTextAnnotation copyWith({
     String? id,
     int? pageIndex,
@@ -221,6 +229,7 @@ class PdfTextAnnotation {
     double? rotationDeg,
     String? text,
     String? fontFamily,
+    bool clearFontFamily = false,
     double? fontSize,
     Color? color,
     bool? bold,
@@ -241,7 +250,7 @@ class PdfTextAnnotation {
         if (rectInPdfSpace != null) 'bbox',
         if (rotationDeg != null) ...['rotation', 'pdfrx:rotation'],
         if (text != null) 'text',
-        if (fontFamily != null) 'font',
+        if (fontFamily != null || clearFontFamily) 'font',
         if (fontSize != null) 'fontSize',
         if (color != null) 'fontColor',
         if (bold != null || italic != null) 'fontStyle',
@@ -265,7 +274,7 @@ class PdfTextAnnotation {
       rectInPdfSpace: rectInPdfSpace ?? this.rectInPdfSpace,
       rotationDeg: rotationDeg ?? this.rotationDeg,
       text: text ?? this.text,
-      fontFamily: fontFamily ?? this.fontFamily,
+      fontFamily: clearFontFamily ? null : fontFamily ?? this.fontFamily,
       fontSize: fontSize ?? this.fontSize,
       color: color ?? this.color,
       bold: bold ?? this.bold,

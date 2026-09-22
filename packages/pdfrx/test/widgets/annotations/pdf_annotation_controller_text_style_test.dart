@@ -212,6 +212,30 @@ void main() {
       expect(controller.texts.single.rectInPdfSpace, const Rect.fromLTWH(10, 20, 72, 18));
       expect(controller.canUndoListenable.value, isFalse, reason: 'exactly one step');
     });
+
+    test('a change back to no family restyles the selected annotation to the host default', () {
+      // `null` means the host default family, and a copyWith cannot tell
+      // "set to null" from "not given": a restyle from a named family back
+      // to none used to keep the old family.
+      final controller = _armed(
+        texts: [
+          _text(style: _loud, preservedJson: {'font': 'Inter-Display'}),
+        ],
+      );
+      addTearDown(controller.dispose);
+      controller.selectText('text-1');
+
+      controller.setTextStyle(_loud.copyWith(clearFontFamily: true));
+
+      final restyled = controller.texts.single;
+      expect(restyled.fontFamily, isNull);
+      expect(restyled.style, _loud.copyWith(clearFontFamily: true));
+      expect(restyled.preservedJson, isEmpty, reason: 'the raw font value is retired, it was what changed');
+      expect(controller.textStyle.fontFamily, isNull, reason: 'the armed style follows');
+
+      controller.undo();
+      expect(controller.texts.single.fontFamily, 'Inter');
+    });
   });
 
   group('Text style: during an edit', () {
