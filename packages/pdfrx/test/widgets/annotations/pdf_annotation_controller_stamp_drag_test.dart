@@ -16,10 +16,7 @@ Offset _onScreen(Rect rect, double rotationDeg, Offset localPoint) {
   final theta = -rotationDeg * math.pi / 180.0;
   final v = localPoint - rect.center;
   return rect.center +
-      Offset(
-        v.dx * math.cos(theta) - v.dy * math.sin(theta),
-        v.dx * math.sin(theta) + v.dy * math.cos(theta),
-      );
+      Offset(v.dx * math.cos(theta) - v.dy * math.sin(theta), v.dx * math.sin(theta) + v.dy * math.cos(theta));
 }
 
 /// Rotates the selected stamp to [deg] through a complete drag.
@@ -228,7 +225,12 @@ void main() {
       expect(anchorAfter.dy, closeTo(anchorBefore.dy, 1e-9));
     });
 
-    test('clamps bbox to a minimum size of 8 PDF points', () {
+    test('clamps bbox to the stamp floor, below the shared annotation minimum', () {
+      // Stamps get their own floor: a dot or an accent on a printed part
+      // is smaller than the 8 pt that rectangles and text keep, and the
+      // host pads the selection box so the handles never depend on it.
+      expect(kMinStampSizePts, lessThan(kMinAnnotationSizePts));
+
       final controller = _makeController();
       addTearDown(controller.dispose);
       _placeAt(controller, id: 'a');
@@ -237,15 +239,36 @@ void main() {
       final original = controller.stamps.single.rectInPdfSpace;
 
       // Drag the bottom-right corner inward by more than the original
-      // dimensions — the bbox must clamp to >= 8 pt on each axis.
+      // dimensions: the bbox must clamp to the stamp floor on each axis.
       controller.beginStampDrag(PdfStampHandle.bottomRight);
       controller.applyStampResize(const Offset(-100, -100));
       controller.endStampDrag();
 
       final after = controller.stamps.single.rectInPdfSpace;
-      expect(after.width, kMinStampSizePts);
-      expect(after.height, kMinStampSizePts);
+      expect(after.width, closeTo(kMinStampSizePts, 1e-9));
+      expect(after.height, closeTo(kMinStampSizePts, 1e-9));
       // Top-left edge stays where it was; bottom-right snaps to min.
+      expect(after.left, closeTo(original.left, 1e-9));
+      expect(after.top, closeTo(original.top, 1e-9));
+    });
+
+    test('an edge drag clamps its own axis at the stamp floor and leaves the other alone', () {
+      final controller = _makeController();
+      addTearDown(controller.dispose);
+      _placeAt(controller, id: 'a');
+      controller.selectStamp('a');
+
+      final original = controller.stamps.single.rectInPdfSpace;
+
+      // Pull the right edge far past the left one: only the width clamps,
+      // and it clamps at the stamp floor, not the shared one.
+      controller.beginStampDrag(PdfAnnotationHandle.right);
+      controller.applyStampResize(const Offset(-100, 0));
+      controller.endStampDrag();
+
+      final after = controller.stamps.single.rectInPdfSpace;
+      expect(after.width, closeTo(kMinStampSizePts, 1e-9));
+      expect(after.height, closeTo(original.height, 1e-9));
       expect(after.left, closeTo(original.left, 1e-9));
       expect(after.top, closeTo(original.top, 1e-9));
     });

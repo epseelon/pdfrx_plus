@@ -7,7 +7,7 @@ export 'src/utils/fixed_overscroll_physics.dart';
 export 'src/widgets/annotations/annotation_text_layout.dart';
 export 'src/widgets/annotations/instant_json.dart';
 export 'src/widgets/annotations/pdf_annotation_controller.dart'
-    show PdfAnnotationHandle, PdfAnnotationTool, PdfStampHandle, kMinAnnotationSizePts;
+    show PdfAnnotationHandle, PdfAnnotationTool, PdfStampHandle, kMinAnnotationSizePts, kMinStampSizePts;
 export 'src/widgets/annotations/pdf_annotation_overlay_labels.dart';
 export 'src/widgets/annotations/pdf_ink_annotation.dart';
 export 'src/widgets/annotations/pdf_rect_annotation.dart';

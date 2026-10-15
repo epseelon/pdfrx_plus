@@ -16,7 +16,7 @@ import 'pdf_stamp_picture.dart';
 import 'pdf_text_annotation.dart';
 import 'selection_geometry.dart';
 
-export 'selection_geometry.dart' show PdfAnnotationHandle, kMinAnnotationSizePts;
+export 'selection_geometry.dart' show PdfAnnotationHandle, kMinAnnotationSizePts, kMinStampSizePts;
 
 /// Active annotation tool while [PdfAnnotationController.annotationModeListenable]
 /// is `true`.
@@ -60,11 +60,6 @@ enum PdfAnnotationTool {
 /// same handles serve stamps and rectangles.
 @Deprecated('Renamed to PdfAnnotationHandle now that the gizmo serves every annotation kind.')
 typedef PdfStampHandle = PdfAnnotationHandle;
-
-/// Legacy alias for [kMinAnnotationSizePts], kept so the fork stays
-/// mergeable with upstream pdfrx.
-@Deprecated('Renamed to kMinAnnotationSizePts now that the clamp serves every annotation kind.')
-const double kMinStampSizePts = kMinAnnotationSizePts;
 
 /// Internal annotation state for a `PdfViewer`. Owns the list of strokes,
 /// the annotation-mode flag, and the in-flight stroke buffer.
@@ -1472,11 +1467,12 @@ class PdfAnnotationController extends ChangeNotifier {
   /// right handle of a rotated stamp widens it along its own axis and
   /// the opposite corner or edge stays fixed on screen.
   ///
-  /// Corner handles preserve the bbox's aspect ratio at drag-start —
-  /// the dominant axis (the one the cursor pulls further in proportion
-  /// to its original size) drives a uniform scale; the opposite corner
+  /// Corner handles preserve the bbox's aspect ratio at drag-start: the
+  /// dominant axis (the one the cursor pulls further in proportion to
+  /// its original size) drives a uniform scale, and the opposite corner
   /// anchors. Edge handles stretch a single axis. Both modes clamp each
-  /// axis to [kMinAnnotationSizePts]. Bumps [stampDragChangedListenable].
+  /// axis to [kMinStampSizePts], the stamp floor below the shared
+  /// [kMinAnnotationSizePts]. Bumps [stampDragChangedListenable].
   void applyStampResize(Offset cumulativeDeltaPdf) {
     final state = _stampDragState;
     if (state == null) return;
@@ -1491,6 +1487,7 @@ class PdfAnnotationController extends ChangeNotifier {
       // Stamps keep their aspect lock on corner drags; rectangles do
       // not (they pass `false`).
       lockAspect: true,
+      minSize: kMinStampSizePts,
     );
 
     _replaceSelectedStamp((s) => s.copyWith(rectInPdfSpace: newRect, updatedAt: _defaultClock()));

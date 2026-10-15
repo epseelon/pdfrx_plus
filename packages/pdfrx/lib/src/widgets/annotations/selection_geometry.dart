@@ -56,6 +56,17 @@ const List<PdfAnnotationHandle> kResizeHandles = <PdfAnnotationHandle>[
 /// so the affordances stay tappable.
 const double kMinAnnotationSizePts = 8.0;
 
+/// Minimum stamp width/height (PDF points) clamped during a stamp
+/// resize. Deliberately below [kMinAnnotationSizePts]: the marks a
+/// musician stamps on a printed part (a staccato dot, an accent, a
+/// bowing) are smaller than 8 pt, and a stamp's handles do not depend
+/// on its size once the host pads the selection box
+/// (`PdfViewerParams.selectedStampPadding`), because the handles render
+/// at fixed screen pixels on that padded box. Rectangles and text keep
+/// the shared floor, whose creation-discard threshold is tuned against
+/// the tap slop.
+const double kMinStampSizePts = 4.0;
+
 /// Whether [handle] is one of the four corner handles.
 bool isCornerHandle(PdfAnnotationHandle handle) =>
     handle == PdfAnnotationHandle.topLeft ||
